@@ -3,6 +3,7 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:surveygo/features/surveys/data/models/survey_model.dart';
+import 'package:surveygo/features/surveys/presentation/pages/survey_detail_page.dart';
 import 'package:surveygo/core/theme/app_colors.dart';
 import 'package:surveygo/env.dart';
 
@@ -21,110 +22,186 @@ class _SurveyMapPageState extends State<SurveyMapPage> {
   LatLng? _current;
   final Map<String, bool> layerStates = {};
 
+  // Entidad seleccionada para inspección longitudinal
+  Map<String, dynamic>? _selectedEntity;
+
   @override
   void initState() {
     super.initState();
     _initLocation();
     final ws = widget.survey.workspace;
     final ly = widget.survey.layer;
-    print('SurveyMapPage initState workspace=$ws layer=$ly');
-    print('GeoServer base: ' + geoserverBaseUrl);
     if (ws.isNotEmpty && ly.isNotEmpty) {
       layerStates['$ws:$ly'] = true;
     }
-    print('layerStates initialized: ' + layerStates.toString());
   }
 
   Future<void> _initLocation() async {
-    LocationPermission permission = await Geolocator.checkPermission();
-    if (permission == LocationPermission.denied) {
-      permission = await Geolocator.requestPermission();
-    }
-    if (permission == LocationPermission.always ||
-        permission == LocationPermission.whileInUse) {
-      final pos = await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.high,
-      );
-      setState(() {
-        _current = LatLng(pos.latitude, pos.longitude);
-        _center = _current!;
-      });
-      // _mapController.move(_center, 15.0);
-    }
+    try {
+      LocationPermission permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+      }
+      if (permission == LocationPermission.always ||
+          permission == LocationPermission.whileInUse) {
+        final pos = await Geolocator.getCurrentPosition(
+          desiredAccuracy: LocationAccuracy.high,
+        );
+        if (mounted) {
+          setState(() {
+            _current = LatLng(pos.latitude, pos.longitude);
+            _center = _current!;
+          });
+        }
+      }
+    } catch (_) {}
   }
 
-  List<Widget> getWmsTileLayers() {
-    print('getWmsTileLayers layerStates: ' + layerStates.toString());
-    final active = layerStates.entries.where((e) => e.value).toList();
-    print('active layers: ' + active.map((e) => e.key).toList().toString());
-    if (active.isEmpty) return [];
-    final workspace = active.first.key.split(':').first;
-    print('computed workspace: ' + workspace);
-    final baseUrl = geoserverBaseUrl.replaceFirst('workspace', workspace);
-    print('resolved baseUrl: ' + baseUrl);
-    return active
-        .map((entry) {
-          print('adding WMS layer: ' + entry.key);
-          return TileLayer(
-            wmsOptions: WMSTileLayerOptions(
-              baseUrl: baseUrl,
-              layers: [entry.key],
-              format: 'image/png',
-              transparent: true,
-              version: '1.1.0',
-              styles: const [''],
-              otherParameters: const {'srs': 'EPSG:4326'},
-            ),
-          );
-        })
-        .toList();
+  void _handleMapTap(TapPosition tapPosition, LatLng point) {
+    // Simulación / consulta de entidad espacial tocada en mapa
+    setState(() {
+      _selectedEntity = {
+        'codigo': 'PRED-${point.latitude.toStringAsFixed(4)}-${point.longitude.toStringAsFixed(4)}',
+        'lat': point.latitude,
+        'lng': point.longitude,
+        'tipo': 'Lote Catastral / Predio',
+        'ultima_inspeccion': 'Pendiente de Actualización',
+      };
+    });
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text(widget.survey.title),
+        title: Text('Mapa: ${widget.survey.title}'),
         backgroundColor: AppColors.primaryColor,
         foregroundColor: Colors.white,
-      ),
-      body: FlutterMap(
-        mapController: _mapController,
-        options: MapOptions(
-          initialCenter: _center,
-          initialZoom: 6.0,
-        ),
-        children: [
-          TileLayer(
-            urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-            userAgentPackageName: 'com.example.surveygo',
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.my_location),
+            onPressed: () {
+              if (_current != null) {
+                _mapController.move(_current!, 16.0);
+              }
+            },
           ),
-          ...getWmsTileLayers(),
-          if (_current != null)
-            MarkerLayer(
-              markers: [
-                Marker(
-                  point: _current!,
-                  width: 40,
-                  height: 40,
-                  child: const Icon(
-                    Icons.my_location,
-                    color: Colors.blue,
-                    size: 32,
+        ],
+      ),
+      body: Stack(
+        children: [
+          FlutterMap(
+            mapController: _mapController,
+            options: MapOptions(
+              initialCenter: _center,
+              initialZoom: 15.0,
+              onTap: _handleMapTap,
+            ),
+            children: [
+              TileLayer(
+                urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                userAgentPackageName: 'org.ideasg.surveygo',
+              ),
+              if (_current != null)
+                MarkerLayer(
+                  markers: [
+                    Marker(
+                      point: _current!,
+                      width: 40,
+                      height: 40,
+                      child: const Icon(
+                        Icons.my_location,
+                        color: Colors.blue,
+                        size: 30,
+                      ),
+                    ),
+                    if (_selectedEntity != null)
+                      Marker(
+                        point: LatLng(_selectedEntity!['lat'], _selectedEntity!['lng']),
+                        width: 40,
+                        height: 40,
+                        child: const Icon(
+                          Icons.location_on,
+                          color: Colors.red,
+                          size: 36,
+                        ),
+                      ),
+                  ],
+                ),
+            ],
+          ),
+
+          // Tarjeta flotante de Entidad Seleccionada (Estilo ODK Entities / Case Management)
+          if (_selectedEntity != null)
+            Positioned(
+              bottom: 20,
+              left: 16,
+              right: 16,
+              child: Card(
+                elevation: 6,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                child: Padding(
+                  padding: const EdgeInsets.all(16.0),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.between,
+                        children: [
+                          Row(
+                            children: [
+                              const Icon(Icons.domain, color: Colors.blue, size: 22),
+                              const SizedBox(width: 8),
+                              Text(
+                                _selectedEntity!['codigo'],
+                                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                              ),
+                            ],
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.close, size: 18),
+                            onPressed: () => setState(() => _selectedEntity = null),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        'Tipo: ${_selectedEntity!['tipo']} | Coord: ${_selectedEntity!['lat'].toStringAsFixed(4)}, ${_selectedEntity!['lng'].toStringAsFixed(4)}',
+                        style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
+                      ),
+                      const SizedBox(height: 12),
+                      SizedBox(
+                        width: double.infinity,
+                        child: ElevatedButton.icon(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: AppColors.primaryColor,
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(vertical: 12),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                          ),
+                          icon: const Icon(Icons.assignment_add),
+                          label: const Text(
+                            '📝 Nueva Inspección / Actualización',
+                            style: TextStyle(fontWeight: FontWeight.bold),
+                          ),
+                          onPressed: () {
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (_) => SurveyDetailPage(survey: widget.survey),
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+                    ],
                   ),
-                )
-              ],
+                ),
+              ),
             ),
         ],
       ),
-      floatingActionButton: _current == null
-          ? null
-          : FloatingActionButton(
-              backgroundColor: AppColors.primaryColor,
-              foregroundColor: Colors.white,
-              onPressed: () => _mapController.move(_center, 15.0),
-              child: const Icon(Icons.center_focus_strong),
-            ),
     );
   }
 }

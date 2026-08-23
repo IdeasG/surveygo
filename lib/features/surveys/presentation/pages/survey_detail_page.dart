@@ -37,6 +37,11 @@ class _SurveyDetailPageState extends State<SurveyDetailPage> {
   String _currentStatus = 'DRAFT';
   final Map<int, String> _validationErrors = {};
 
+  // Auditoría e Integridad Antifraude (Estilo SurveyCTO)
+  final DateTime _startTime = DateTime.now();
+  double _gpsAccuracy = 0.0;
+  LatLng? _initialGpsLocation;
+
   // Ubicación actual
   LatLng _currentLocation = const LatLng(-12.04318, -75.02824);
   bool _isRuralZone = false;
@@ -92,6 +97,8 @@ class _SurveyDetailPageState extends State<SurveyDetailPage> {
         if (mounted) {
           setState(() {
             _currentLocation = LatLng(position.latitude, position.longitude);
+            _gpsAccuracy = position.accuracy;
+            _initialGpsLocation ??= LatLng(position.latitude, position.longitude);
             _isRuralZone = true;
           });
         }
