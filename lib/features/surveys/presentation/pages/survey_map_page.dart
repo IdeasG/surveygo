@@ -91,8 +91,8 @@ class _SurveyMapPageState extends State<SurveyMapPage> {
       body: FlutterMap(
         mapController: _mapController,
         options: MapOptions(
-          center: _center,
-          zoom: 6.0,
+          initialCenter: _center,
+          initialZoom: 6.0,
         ),
         children: [
           TileLayer(

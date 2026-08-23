@@ -1,3 +1,5 @@
+import 'package:surveygo/features/surveys/data/models/survey_question_model.dart';
+
 class SurveyModel {
   final int id;
   final String title;
@@ -37,28 +39,98 @@ class SurveyModel {
 
 class QuestionModel {
   final int id;
+  final String field;
   final String text;
-  final String type; // 'multiple_choice', 'text', etc.
+  final String type; // 'SELECTIONSIMPLE', 'TEXT', 'MAP', 'POLYGON', etc.
   final List<OptionModel> options;
   String? answer;
 
+  // Propiedades avanzadas
+  final bool isRequired;
+  final String? dependsOnField;
+  final dynamic dependsOnValue;
+  final String? section;
+  final String? hint;
+  final String? geometryType;
+  final bool allowGpsOnly;
+  final double? minValue;
+  final double? maxValue;
+  final String? regexPattern;
+
   QuestionModel({
     required this.id,
+    this.field = '',
     required this.text,
     required this.type,
     required this.options,
     this.answer,
+    this.isRequired = false,
+    this.dependsOnField,
+    this.dependsOnValue,
+    this.section,
+    this.hint,
+    this.geometryType,
+    this.allowGpsOnly = false,
+    this.minValue,
+    this.maxValue,
+    this.regexPattern,
   });
 
   factory QuestionModel.fromJson(Map<String, dynamic> json) {
     return QuestionModel(
       id: json['id'] ?? 0,
-      text: json['text'] ?? '',
-      type: json['type'] ?? 'text',
+      field: json['field'] ?? json['c_campo'] ?? '',
+      text: json['text'] ?? json['c_pregunta'] ?? '',
+      type: json['type'] ?? json['c_tipo'] ?? 'text',
       options: (json['options'] as List? ?? [])
           .map((o) => OptionModel.fromJson(o))
           .toList(),
       answer: json['answer'],
+      isRequired: json['is_required'] ?? false,
+      dependsOnField: json['depends_on_field'],
+      dependsOnValue: json['depends_on_value'],
+      section: json['section'],
+      hint: json['hint'],
+      geometryType: json['geometry_type'],
+      allowGpsOnly: json['allow_gps_only'] ?? false,
+      minValue: (json['min_value'] as num?)?.toDouble(),
+      maxValue: (json['max_value'] as num?)?.toDouble(),
+      regexPattern: json['regex'],
+    );
+  }
+
+  factory QuestionModel.fromSurveyQuestionModel(SurveyQuestionModel q) {
+    List<OptionModel> parsedOptions = [];
+    if (q.jOpciones != null && q.jOpciones!['opciones'] is List) {
+      final list = q.jOpciones!['opciones'] as List;
+      parsedOptions = list.asMap().entries.map((e) {
+        if (e.value is Map) {
+          return OptionModel(
+            id: e.value['id'] ?? e.key,
+            text: e.value['label'] ?? e.value['text'] ?? e.value.toString(),
+          );
+        } else {
+          return OptionModel(id: e.key, text: e.value.toString());
+        }
+      }).toList();
+    }
+
+    return QuestionModel(
+      id: q.id,
+      field: q.cCampo,
+      text: q.cPregunta,
+      type: q.cTipo,
+      options: parsedOptions,
+      isRequired: q.isRequired,
+      dependsOnField: q.dependsOnField,
+      dependsOnValue: q.dependsOnValue,
+      section: q.section,
+      hint: q.hint,
+      geometryType: q.geometryType,
+      allowGpsOnly: q.allowGpsOnly,
+      minValue: q.minValue,
+      maxValue: q.maxValue,
+      regexPattern: q.regexPattern,
     );
   }
 }

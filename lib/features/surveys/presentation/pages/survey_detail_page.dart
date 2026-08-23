@@ -12,15 +12,19 @@ import 'package:signature/signature.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:surveygo/core/theme/app_colors.dart';
 import 'package:surveygo/features/surveys/data/models/survey_model.dart';
-
+import 'package:surveygo/core/utils/gis_calculator.dart';
 import 'package:surveygo/features/surveys/presentation/pages/map_input_page.dart';
 import 'package:surveygo/services/database_helper.dart';
-import 'package:surveygo/services/survey_sync_service.dart';
 
 class SurveyDetailPage extends StatefulWidget {
   final SurveyModel survey;
+  final String? existingResponseSetId;
 
-  const SurveyDetailPage({Key? key, required this.survey}) : super(key: key);
+  const SurveyDetailPage({
+    Key? key,
+    required this.survey,
+    this.existingResponseSetId,
+  }) : super(key: key);
 
   @override
   State<SurveyDetailPage> createState() => _SurveyDetailPageState();
@@ -29,122 +33,142 @@ class SurveyDetailPage extends StatefulWidget {
 class _SurveyDetailPageState extends State<SurveyDetailPage> {
   bool _isLoading = true;
   List<QuestionModel> _questions = [];
-  final SurveySyncService _syncService = SurveySyncService();
-  // Coordenadas por defecto
-  LatLng _currentLocation = LatLng(19.432608, -99.133209);
+  String? _currentResponseSetId;
+  String _currentStatus = 'DRAFT';
+  final Map<int, String> _validationErrors = {};
+
+  // Ubicación actual
+  LatLng _currentLocation = const LatLng(-12.04318, -75.02824);
   bool _isRuralZone = false;
+
+  // Filtro de secciones
+  String? _selectedSection;
+  List<String> _availableSections = [];
 
   @override
   void initState() {
     super.initState();
-    _loadQuestions();
+    _currentResponseSetId = widget.existingResponseSetId;
+
+    // 1. Carga inmediata de las preguntas del modelo para cero latencia
+    _questions = List<QuestionModel>.from(widget.survey.questions);
+    final sections = <String>{};
+    for (var q in _questions) {
+      if (q.section != null && q.section!.isNotEmpty) {
+        sections.add(q.section!);
+      }
+    }
+    _availableSections = sections.toList();
+    if (_availableSections.isNotEmpty) {
+      _selectedSection = _availableSections.first;
+    }
+    _isLoading = false;
+
+    // 2. Carga asíncrona de respuestas previas y GPS sin bloquear UI
+    _loadQuestionsAndAnswers();
     _getCurrentLocation();
   }
 
   Future<void> _getCurrentLocation() async {
     try {
-      // Verificar permisos
-      LocationPermission permission = await Geolocator.checkPermission();
+      LocationPermission permission = await Geolocator.checkPermission().timeout(
+        const Duration(seconds: 2),
+        onTimeout: () => LocationPermission.denied,
+      );
       if (permission == LocationPermission.denied) {
-        permission = await Geolocator.requestPermission();
-        if (permission == LocationPermission.denied) {
-          print('Permisos de ubicación denegados');
-          return;
+        permission = await Geolocator.requestPermission().timeout(
+          const Duration(seconds: 2),
+          onTimeout: () => LocationPermission.denied,
+        );
+      }
+
+      if (permission == LocationPermission.whileInUse ||
+          permission == LocationPermission.always) {
+        final position = await Geolocator.getCurrentPosition(
+          desiredAccuracy: LocationAccuracy.high,
+        ).timeout(
+          const Duration(seconds: 3),
+        );
+        if (mounted) {
+          setState(() {
+            _currentLocation = LatLng(position.latitude, position.longitude);
+            _isRuralZone = true;
+          });
+        }
+      }
+    } catch (e) {
+      debugPrint('Ubicación por defecto establecida: $e');
+    }
+  }
+
+  Future<void> _loadQuestionsAndAnswers() async {
+    try {
+      final dbHelper = DatabaseHelper();
+      
+      final localQuestions = await dbHelper.getQuestions(widget.survey.id).timeout(
+        const Duration(seconds: 2),
+        onTimeout: () => [],
+      );
+
+      List<QuestionModel> loaded = [];
+      if (localQuestions.isNotEmpty) {
+        loaded = localQuestions.map((q) => QuestionModel.fromSurveyQuestionModel(q)).toList();
+      } else {
+        loaded = List<QuestionModel>.from(widget.survey.questions);
+      }
+
+      if (_currentResponseSetId != null) {
+        final savedResponses = await dbHelper.getResponsesBySetId(_currentResponseSetId!).timeout(
+          const Duration(seconds: 2),
+          onTimeout: () => [],
+        );
+        for (var resp in savedResponses) {
+          final qId = int.tryParse(resp['id_pregunta'].toString());
+          final matched = loaded.where((q) => q.id == qId);
+          if (matched.isNotEmpty) {
+            matched.first.answer = resp['c_respuesta'] ?? resp['glgis'];
+          }
+          if (resp['status'] != null) {
+            _currentStatus = resp['status'];
+          }
         }
       }
 
-      if (permission == LocationPermission.deniedForever) {
-        print('Permisos de ubicación denegados permanentemente');
-        return;
+      final sections = <String>{};
+      for (var q in loaded) {
+        if (q.section != null && q.section!.isNotEmpty) {
+          sections.add(q.section!);
+        }
       }
 
-      // Obtener ubicación actual
-      Position position = await Geolocator.getCurrentPosition(
-          desiredAccuracy: LocationAccuracy.high);
-
-      // Determinar si es zona rural (esto es un ejemplo, puedes ajustar la lógica)
-      // Por ejemplo, podríamos considerar rural si está a más de 20km de un centro urbano
-      _isRuralZone = true; // Simulamos que es zona rural
-
-      setState(() {
-        _currentLocation = LatLng(position.latitude, position.longitude);
-      });
-
-      // Mostrar mensaje de zonas rurales
-      if (mounted && _isRuralZone) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-                'Ubicación detectada: Lat: ${position.latitude.toStringAsFixed(6)}, Long: ${position.longitude.toStringAsFixed(6)}'),
-            duration: Duration(seconds: 3),
-          ),
-        );
-
-        // Mostrar mensaje de zona rural después de un breve retraso
-        Future.delayed(Duration(seconds: 3), () {
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                content: Text(
-                    'Modo zonas rurales activado - Optimizando para conexión limitada'),
-                backgroundColor: Colors.green,
-                duration: Duration(seconds: 5),
-              ),
-            );
+      if (mounted) {
+        setState(() {
+          if (loaded.isNotEmpty) {
+            _questions = loaded;
           }
+          _availableSections = sections.toList();
+          if (_availableSections.isNotEmpty && _selectedSection == null) {
+            _selectedSection = _availableSections.first;
+          }
+          _isLoading = false;
         });
       }
-
-      print(
-          'Coordenadas actuales: ${_currentLocation.latitude}, ${_currentLocation.longitude}');
     } catch (e) {
-      print('Error obteniendo ubicación: $e');
-      // Mostrar mensaje de error
+      debugPrint('Error enriqueciendo preguntas: $e');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('No se pudo obtener la ubicación: $e'),
-            backgroundColor: Colors.red,
-          ),
-        );
+        setState(() => _isLoading = false);
       }
     }
   }
 
-  Future<void> _loadQuestions() async {
-    setState(() {
-      _isLoading = true;
-    });
-
-    try {
-      // Aquí cargaríamos las preguntas de la encuesta desde la base de datos local
-      // Por ahora, usamos las preguntas que ya vienen en el modelo
-      setState(() {
-        _questions = widget.survey.questions;
-        _isLoading = false;
-      });
-    } catch (e) {
-      print('Error cargando preguntas: $e');
-      setState(() {
-        _isLoading = false;
-      });
-
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Error al cargar preguntas')),
-        );
-      }
-    }
-  }
-
-  // Helper: guarda bytes en carpeta privada 'uploads' junto a la BD
+  // Helper: guarda bytes en carpeta privada 'uploads'
   Future<Map<String, String>> _saveBytesToUploads(
     Uint8List bytes,
     String baseName,
     String extension,
   ) async {
     final dbPath = await getDatabasesPath();
-    final uploadsDir = Directory('${dbPath}/uploads');
+    final uploadsDir = Directory('$dbPath/uploads');
     if (!await uploadsDir.exists()) {
       await uploadsDir.create(recursive: true);
     }
@@ -155,79 +179,167 @@ class _SurveyDetailPageState extends State<SurveyDetailPage> {
     return {'path': filePath, 'name': fileName, 'ext': extension};
   }
 
-  Future<void> _saveResponses() async {
-    setState(() {
-      _isLoading = true;
-    });
+  // Evaluación de Skip Logic (Lógica condicional)
+  bool _isQuestionVisible(QuestionModel q) {
+    if (q.dependsOnField == null || q.dependsOnField!.trim().isEmpty) return true;
+
+    final depField = q.dependsOnField!.trim();
+    final parent = _questions.firstWhere(
+      (item) => item.field == depField || item.id.toString() == depField,
+      orElse: () => QuestionModel(id: -1, text: '', type: '', options: []),
+    );
+
+    if (parent.id == -1 || parent.answer == null || parent.answer!.trim().isEmpty) {
+      return false;
+    }
+
+    if (q.dependsOnValue != null) {
+      final expected = q.dependsOnValue.toString().trim().toLowerCase();
+      final actual = parent.answer.toString().trim().toLowerCase();
+      return actual == expected;
+    }
+
+    return true;
+  }
+
+  // Validación de campo
+  String? _validateQuestion(QuestionModel q) {
+    if (!_isQuestionVisible(q)) return null;
+
+    if (q.isRequired && (q.answer == null || q.answer!.trim().isEmpty)) {
+      return 'Este campo es obligatorio';
+    }
+
+    if (q.minValue != null || q.maxValue != null) {
+      final numVal = double.tryParse(q.answer ?? '');
+      if (numVal != null) {
+        if (q.minValue != null && numVal < q.minValue!) {
+          return 'El valor mínimo permitido es ${q.minValue}';
+        }
+        if (q.maxValue != null && numVal > q.maxValue!) {
+          return 'El valor máximo permitido es ${q.maxValue}';
+        }
+      }
+    }
+
+    if (q.regexPattern != null && q.answer != null && q.answer!.isNotEmpty) {
+      final regExp = RegExp(q.regexPattern!);
+      if (!regExp.hasMatch(q.answer!)) {
+        return 'El formato ingresado no es válido';
+      }
+    }
+
+    return null;
+  }
+
+  Future<void> _handleSave({required bool isDraft}) async {
+    _validationErrors.clear();
+
+    // Si vamos a finalizar (no borrador), validamos campos obligatorios
+    if (!isDraft) {
+      bool hasErrors = false;
+      for (final question in _questions) {
+        if (_isQuestionVisible(question)) {
+          final err = _validateQuestion(question);
+          if (err != null) {
+            _validationErrors[question.id] = err;
+            hasErrors = true;
+          }
+        }
+      }
+
+      if (hasErrors) {
+        setState(() {});
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Por favor completa todos los campos obligatorios antes de finalizar'),
+            backgroundColor: Colors.red,
+          ),
+        );
+        return;
+      }
+    }
+
+    setState(() => _isLoading = true);
 
     try {
       final dbHelper = DatabaseHelper();
+      final String responseSetId = _currentResponseSetId ??
+          'set_${DateTime.now().millisecondsSinceEpoch}';
+      final String newStatus = isDraft ? 'DRAFT' : 'COMPLETED';
 
-      // Generamos un identificador único para este conjunto de respuestas
-      final String responseSetId =
-          DateTime.now().millisecondsSinceEpoch.toString();
+      // Si ya existían respuestas previas de este set, las eliminamos para reinsertar actualizadas
+      await dbHelper.deleteResponseSet(responseSetId);
 
-      // Procesamos cada pregunta y guardamos las respuestas
       for (final question in _questions) {
+        // Si no es visible por skip logic, no guardamos respuesta
+        if (!_isQuestionVisible(question)) continue;
+
         Map<String, dynamic> responseData = {
-          'id_encuesta': widget.survey.id,
-          'id_pregunta': question.id,
+          'id_encuesta': widget.survey.id.toString(),
+          'id_pregunta': question.id.toString(),
           'c_tipo_pregunta': question.type,
           'c_respuesta': null,
           'c_nombre_file': null,
           'c_extension': null,
           'glgis': null,
-          'response_set_id':
-              responseSetId, // Añadimos un identificador para agrupar respuestas
+          'response_set_id': responseSetId,
+          'status': newStatus,
         };
 
-        // Procesar según el tipo de pregunta
-        switch (question.type.toUpperCase()) {
+        final qType = question.type.toUpperCase();
+
+        switch (qType) {
+          case 'PHOTO':
+          case 'SIGNATURE':
           case 'FILE':
             if (question.answer != null && question.answer!.isNotEmpty) {
-              try {
-                final fileData = jsonDecode(question.answer!);
-                responseData['c_respuesta'] = fileData['path'];
-                responseData['c_nombre_file'] = fileData['name'];
-                responseData['c_extension'] =
-                    _getFileExtension(fileData['name']);
-              } catch (e) {
-                print('Error procesando archivo: $e');
+              if (question.answer!.startsWith('data:image') ||
+                  question.answer!.length > 500) {
+                // Es Base64 en memoria -> guardar archivo
+                try {
+                  final raw = question.answer!.contains(',')
+                      ? question.answer!.split(',')[1]
+                      : question.answer!;
+                  final bytes = base64Decode(raw);
+                  final ext = qType == 'SIGNATURE' ? '.png' : '.jpg';
+                  final saved = await _saveBytesToUploads(
+                    bytes,
+                    'file_${question.id}_${DateTime.now().millisecondsSinceEpoch}',
+                    ext,
+                  );
+                  responseData['c_respuesta'] = saved['path'];
+                  responseData['c_nombre_file'] = saved['name'];
+                  responseData['c_extension'] = saved['ext'];
+                } catch (_) {
+                  responseData['c_respuesta'] = question.answer;
+                }
+              } else {
                 responseData['c_respuesta'] = question.answer;
               }
             }
             break;
 
-          case 'PHOTO':
-          case 'SIGNATURE':
-            // Para fotos y firmas, guardamos la ruta o referencia
-            if (question.answer != null && question.answer!.isNotEmpty) {
-              // answer contiene Base64; persistimos como archivo en disco
-              final bytes = base64Decode(question.answer!);
-              final baseName =
-                  '${question.id}_${DateTime.now().millisecondsSinceEpoch}';
-              final saved = await _saveBytesToUploads(bytes, baseName, '.png');
-
-              responseData['c_respuesta'] = saved['path']; // ruta del archivo
-              responseData['c_nombre_file'] = saved['name'];
-              responseData['c_extension'] = saved['ext'];
-            }
-            break;
-
           case 'MAP':
-            // Para mapas, guardamos las coordenadas en glgis
+          case 'GEOMETRY':
+          case 'POLYGON':
+          case 'LINE':
+          case 'GEOSHAPE':
+          case 'GEOTRACE':
+          case 'GEOPOINT':
             if (question.answer != null && question.answer!.isNotEmpty) {
-              final geoJson = {
-                "type": "Point",
-                "coordinates": [question.answer]
-              };
-              responseData['glgis'] = jsonEncode(geoJson);
+              final parsed = GisCalculator.fromGeoJsonOrString(question.answer);
+              if (parsed != null) {
+                final geoJsonMap = GisCalculator.toGeoJson(parsed.type, parsed.points);
+                responseData['glgis'] = jsonEncode(geoJsonMap);
+              } else {
+                responseData['glgis'] = question.answer;
+              }
               responseData['c_respuesta'] = null;
             }
             break;
-          case 'COORDINATE':
-            // Para preguntas de tipo coordenada, usar la ubicación actual si estamos en zona rural
 
+          case 'COORDINATE':
             final geoJson = {
               "type": "Point",
               "coordinates": [
@@ -237,58 +349,37 @@ class _SurveyDetailPageState extends State<SurveyDetailPage> {
             };
             responseData['glgis'] = jsonEncode(geoJson);
             responseData['c_respuesta'] = null;
-
             break;
 
           default:
-            // Para otros tipos, guardar la respuesta directamente
             responseData['c_respuesta'] = question.answer;
-
             break;
         }
 
-        // Insertar en la base de datos
         await dbHelper.insertResponse(responseData);
       }
 
-      // Mostrar mensaje de éxito
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Respuestas guardadas correctamente'),
-            backgroundColor: Colors.green,
-          ),
-        );
-        // Regresar a la página anterior después de guardar
-        Navigator.of(context).pop();
-      }
-
-      print('Respuestas guardadas para la encuesta: ${widget.survey.id}');
-    } catch (e) {
-      print('Error guardando respuestas: $e');
-
-      if (mounted) {
+        setState(() => _isLoading = false);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Error al guardar respuestas: $e'),
-            backgroundColor: Colors.red,
+            content: Text(isDraft
+                ? '💾 Borrador guardado exitosamente'
+                : '✅ Encuesta completada y lista para sincronizar'),
+            backgroundColor: isDraft ? Colors.orange.shade800 : Colors.green.shade800,
           ),
         );
+        Navigator.pop(context, true);
       }
-    } finally {
-      setState(() {
-        _isLoading = false;
-      });
+    } catch (e) {
+      debugPrint('Error guardando respuestas: $e');
+      setState(() => _isLoading = false);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error al guardar: $e'), backgroundColor: Colors.red),
+        );
+      }
     }
-  }
-
-// Método auxiliar para obtener extensión de archivo
-  String _getFileExtension(String fileName) {
-    final parts = fileName.split('.');
-    if (parts.length > 1) {
-      return '.${parts.last}';
-    }
-    return '';
   }
 
   @override
@@ -296,10 +387,14 @@ class _SurveyDetailPageState extends State<SurveyDetailPage> {
     return Scaffold(
       appBar: AppBar(
         title: Text(widget.survey.title),
+        backgroundColor: AppColors.primaryColor,
+        foregroundColor: Colors.white,
         actions: [
-          IconButton(
-            icon: const Icon(Icons.save),
-            onPressed: _saveResponses,
+          // Botón Guardar Borrador
+          TextButton.icon(
+            icon: const Icon(Icons.save_outlined, color: Colors.white, size: 20),
+            label: const Text('Borrador', style: TextStyle(color: Colors.white)),
+            onPressed: () => _handleSave(isDraft: true),
           ),
         ],
       ),
@@ -307,54 +402,114 @@ class _SurveyDetailPageState extends State<SurveyDetailPage> {
           ? const Center(child: CircularProgressIndicator())
           : Column(
               children: [
-                // Mostrar coordenadas y estado de zona rural
+                // Selector de Secciones si existen
+                if (_availableSections.isNotEmpty) _buildSectionTabs(),
+
+                // Banner de ubicación GPS
                 if (_isRuralZone)
                   Container(
-                    padding: const EdgeInsets.all(8.0),
-                    color: Colors.green.shade100,
+                    width: double.infinity,
+                    color: Colors.green.shade50,
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                     child: Row(
                       children: [
-                        Icon(Icons.location_on, color: Colors.green),
-                        SizedBox(width: 8),
+                        const Icon(Icons.satellite_alt, color: Colors.green, size: 18),
+                        const SizedBox(width: 8),
                         Expanded(
                           child: Text(
-                            'Zona rural detectada - Coordenadas: ${_currentLocation.latitude.toStringAsFixed(6)}, ${_currentLocation.longitude.toStringAsFixed(6)}',
-                            style: TextStyle(fontSize: 12),
+                            'GPS: ${_currentLocation.latitude.toStringAsFixed(5)}, ${_currentLocation.longitude.toStringAsFixed(5)}',
+                            style: TextStyle(fontSize: 12, color: Colors.green.shade900),
                           ),
                         ),
                       ],
                     ),
                   ),
-                // Lista de preguntas
+
+                // Lista de Preguntas
                 Expanded(
                   child: ListView.builder(
                     padding: const EdgeInsets.all(16.0),
                     itemCount: _questions.length,
                     itemBuilder: (context, index) {
-                      return _buildQuestionCard(_questions[index], index);
+                      final question = _questions[index];
+                      // Si hay secciones y la pregunta no pertenece a la sección activa, no mostrar
+                      if (_selectedSection != null &&
+                          question.section != null &&
+                          question.section!.isNotEmpty &&
+                          question.section != _selectedSection) {
+                        return const SizedBox.shrink();
+                      }
+                      return _buildQuestionCard(question, index);
                     },
                   ),
                 ),
+
+                // Barra Inferior de Acción
+                _buildBottomActionBar(),
               ],
             ),
     );
   }
 
+  Widget _buildSectionTabs() {
+    return Container(
+      height: 48,
+      color: Colors.grey.shade100,
+      child: ListView.builder(
+        scrollDirection: Axis.horizontal,
+        itemCount: _availableSections.length,
+        itemBuilder: (context, idx) {
+          final sec = _availableSections[idx];
+          final isSelected = sec == _selectedSection;
+          return GestureDetector(
+            onTap: () => setState(() => _selectedSection = sec),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              decoration: BoxDecoration(
+                border: Border(
+                  bottom: BorderSide(
+                    color: isSelected ? AppColors.primaryColor : Colors.transparent,
+                    width: 3,
+                  ),
+                ),
+              ),
+              child: Text(
+                sec,
+                style: TextStyle(
+                  color: isSelected ? AppColors.primaryColor : Colors.grey.shade700,
+                  fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                ),
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
   Widget _buildQuestionCard(QuestionModel question, int index) {
-    // No mostrar preguntas de tipo COORDINATE
-    if (question.type.toUpperCase() == "COORDINATE") {
-      return const SizedBox.shrink(); // Widget invisible
+    if (question.type.toUpperCase() == "COORDINATE" || !_isQuestionVisible(question)) {
+      return const SizedBox.shrink();
     }
+
+    final hasError = _validationErrors.containsKey(question.id);
+
     return Card(
       margin: const EdgeInsets.only(bottom: 16.0),
       elevation: 2,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: hasError
+            ? const BorderSide(color: Colors.red, width: 1.5)
+            : BorderSide.none,
+      ),
       child: Padding(
         padding: const EdgeInsets.all(16.0),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Container(
                   padding: const EdgeInsets.all(8),
@@ -372,29 +527,84 @@ class _SurveyDetailPageState extends State<SurveyDetailPage> {
                 ),
                 const SizedBox(width: 12),
                 Expanded(
-                  child: Text(
-                    question.text,
-                    style: const TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.bold,
-                    ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              question.text,
+                              style: const TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
+                          if (question.isRequired)
+                            const Text(' *', style: TextStyle(color: Colors.red, fontSize: 18, fontWeight: FontWeight.bold)),
+                        ],
+                      ),
+                      if (question.hint != null && question.hint!.isNotEmpty)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 4.0),
+                          child: Text(
+                            question.hint!,
+                            style: TextStyle(fontSize: 12, color: Colors.grey.shade600, fontStyle: FontStyle.italic),
+                          ),
+                        ),
+                    ],
                   ),
                 ),
               ],
             ),
+            if (hasError)
+              Padding(
+                padding: const EdgeInsets.only(top: 6, left: 40),
+                child: Text(
+                  _validationErrors[question.id]!,
+                  style: const TextStyle(color: Colors.red, fontSize: 12, fontWeight: FontWeight.w600),
+                ),
+              ),
             const SizedBox(height: 12),
-            if (question.type.toUpperCase() == 'SELECTIONSIMPLE')
-              _buildRadioButtons(question)
-            else if (question.type.toUpperCase() == 'SELECTIONMULTIPLE')
-              _buildCheckboxes(question)
-            else if (question.type == 'multiple_choice')
-              _buildMultipleChoiceOptions(question)
-            else
-              _buildTextInput(question),
+            _buildInputForQuestion(question),
           ],
         ),
       ),
     );
+  }
+
+  Widget _buildInputForQuestion(QuestionModel question) {
+    final type = question.type.toUpperCase();
+    switch (type) {
+      case 'SELECTIONSIMPLE':
+        return _buildRadioButtons(question);
+      case 'SELECTIONMULTIPLE':
+        return _buildCheckboxes(question);
+      case 'DATETIME':
+        return _buildDateTimeInput(question);
+      case 'NUMBER':
+        return _buildNumberInput(question);
+      case 'EMAIL':
+        return _buildEmailInput(question);
+      case 'SIGNATURE':
+        return _buildSignatureInput(question);
+      case 'MAP':
+      case 'GEOMETRY':
+      case 'POLYGON':
+      case 'LINE':
+      case 'GEOSHAPE':
+      case 'GEOTRACE':
+      case 'GEOPOINT':
+        return _buildMapButton(question);
+      case 'FILE':
+        return _buildFileInput(question);
+      case 'PHOTO':
+        return _buildPhotoInput(question);
+      case 'TEXT':
+      default:
+        return _buildDefaultTextInput(question);
+    }
   }
 
   Widget _buildRadioButtons(QuestionModel question) {
@@ -407,6 +617,7 @@ class _SurveyDetailPageState extends State<SurveyDetailPage> {
           onChanged: (value) {
             setState(() {
               question.answer = value;
+              _validationErrors.remove(question.id);
             });
           },
           activeColor: AppColors.primaryColor,
@@ -416,41 +627,25 @@ class _SurveyDetailPageState extends State<SurveyDetailPage> {
   }
 
   Widget _buildCheckboxes(QuestionModel question) {
-    // Para checkboxes, necesitamos manejar múltiples selecciones
-    // Inicializamos la respuesta como una lista vacía si aún no existe
-    question.answer ??= '[]';
-
-    // Convertimos la respuesta de JSON a una lista
-    List<String> selectedOptions = [];
-    try {
-      if (question.answer != null && question.answer!.isNotEmpty) {
-        selectedOptions = List<String>.from(jsonDecode(question.answer!));
-      }
-    } catch (e) {
-      print('Error decodificando respuestas múltiples: $e');
-      question.answer = '[]';
-      selectedOptions = [];
-    }
+    List<String> selected = question.answer != null && question.answer!.isNotEmpty
+        ? question.answer!.split(', ')
+        : [];
 
     return Column(
       children: question.options.map((option) {
-        final optionId = option.id.toString();
-        final isSelected = selectedOptions.contains(optionId);
-
+        final isChecked = selected.contains(option.text);
         return CheckboxListTile(
           title: Text(option.text),
-          value: isSelected,
+          value: isChecked,
           onChanged: (bool? value) {
             setState(() {
               if (value == true) {
-                if (!selectedOptions.contains(optionId)) {
-                  selectedOptions.add(optionId);
-                }
+                selected.add(option.text);
               } else {
-                selectedOptions.remove(optionId);
+                selected.remove(option.text);
               }
-              // Actualizamos la respuesta como JSON
-              question.answer = jsonEncode(selectedOptions);
+              question.answer = selected.join(', ');
+              _validationErrors.remove(question.id);
             });
           },
           activeColor: AppColors.primaryColor,
@@ -459,88 +654,153 @@ class _SurveyDetailPageState extends State<SurveyDetailPage> {
     );
   }
 
-  Widget _buildMultipleChoiceOptions(QuestionModel question) {
-    return Column(
-      children: question.options.map((option) {
-        return RadioListTile<String>(
-          title: Text(option.text),
-          value: option.text,
-          groupValue: question.answer,
-          onChanged: (value) {
-            setState(() {
-              question.answer = value;
-            });
-          },
-          activeColor: AppColors.primaryColor,
-        );
-      }).toList(),
+  Widget _buildDefaultTextInput(QuestionModel question) {
+    return TextFormField(
+      initialValue: question.answer,
+      decoration: InputDecoration(
+        hintText: question.hint ?? 'Escribe tu respuesta aquí',
+        border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+      ),
+      onChanged: (value) {
+        question.answer = value;
+        _validationErrors.remove(question.id);
+      },
     );
   }
 
-  Widget _buildTextInput(QuestionModel question) {
-    // Determinar el tipo de entrada según el tipo de pregunta
-    final String questionType = question.type.toUpperCase();
+  Widget _buildNumberInput(QuestionModel question) {
+    return TextFormField(
+      initialValue: question.answer,
+      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+      decoration: InputDecoration(
+        hintText: question.hint ?? 'Ingrese un número',
+        border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+      ),
+      onChanged: (value) {
+        question.answer = value;
+        _validationErrors.remove(question.id);
+      },
+    );
+  }
 
-    switch (questionType) {
-      case 'DATETIME':
-        return _buildDateTimeInput(question);
-      case 'NUMBER':
-        return _buildNumberInput(question);
-      case 'EMAIL':
-        return _buildEmailInput(question);
-      case 'TEXT':
-        return _buildDefaultTextInput(question);
-      case 'SIGNATURE':
-        return _buildSignatureInput(question);
-      case 'MAP':
-        return _buildMapButton(question);
-      case 'FILE':
-        return _buildFileInput(question);
-      case 'PHOTO':
-        return _buildPhotoInput(question);
-      default:
-        return _buildDefaultTextInput(question);
-    }
+  Widget _buildEmailInput(QuestionModel question) {
+    return TextFormField(
+      initialValue: question.answer,
+      keyboardType: TextInputType.emailAddress,
+      decoration: InputDecoration(
+        hintText: question.hint ?? 'correo@ejemplo.com',
+        prefixIcon: const Icon(Icons.email_outlined),
+        border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+      ),
+      onChanged: (value) {
+        question.answer = value;
+        _validationErrors.remove(question.id);
+      },
+    );
+  }
+
+  Widget _buildDateTimeInput(QuestionModel question) {
+    return Row(
+      children: [
+        Expanded(
+          child: Text(
+            question.answer == null || question.answer!.isEmpty
+                ? 'Ninguna fecha seleccionada'
+                : 'Fecha: ${question.answer}',
+            style: const TextStyle(fontSize: 14),
+          ),
+        ),
+        ElevatedButton.icon(
+          icon: const Icon(Icons.calendar_today),
+          label: const Text('Elegir Fecha'),
+          onPressed: () async {
+            final picked = await showDatePicker(
+              context: context,
+              initialDate: DateTime.now(),
+              firstDate: DateTime(2000),
+              lastDate: DateTime(2100),
+            );
+            if (picked != null) {
+              setState(() {
+                question.answer = picked.toIso8601String().split('T')[0];
+                _validationErrors.remove(question.id);
+              });
+            }
+          },
+        ),
+      ],
+    );
   }
 
   Widget _buildMapButton(QuestionModel question) {
-    // Mostrar una vista previa de la ubicación si ya existe
-    Widget previewWidget = Container();
+    Widget previewWidget = const SizedBox.shrink();
 
     if (question.answer != null && question.answer!.isNotEmpty) {
-      try {
-        final parts = question.answer!.split(',');
-        if (parts.length == 2) {
-          final lat = double.parse(parts[1]);
-          final lng = double.parse(parts[0]);
+      final parsed = GisCalculator.fromGeoJsonOrString(question.answer);
+      if (parsed != null) {
+        IconData icon = Icons.place;
+        String title = 'Punto seleccionado';
+        String subtitle = '';
 
-          previewWidget = Container(
-            margin: EdgeInsets.only(bottom: 10),
-            padding: EdgeInsets.all(8),
-            decoration: BoxDecoration(
-              border: Border.all(color: Colors.grey),
-              borderRadius: BorderRadius.circular(4),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text('Ubicación seleccionada:'),
-                SizedBox(height: 4),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.start,
+        switch (parsed.type) {
+          case GeoGeometryType.point:
+            icon = Icons.place;
+            title = 'Punto Georreferenciado';
+            final p = parsed.points.first;
+            subtitle = 'Lat: ${p.latitude.toStringAsFixed(6)} | Lng: ${p.longitude.toStringAsFixed(6)}';
+            break;
+          case GeoGeometryType.line:
+            icon = Icons.timeline;
+            title = 'Línea / Ruta (${parsed.points.length} puntos)';
+            subtitle = 'Distancia: ${GisCalculator.formatDistance(GisCalculator.calculateDistance(parsed.points))}';
+            break;
+          case GeoGeometryType.polygon:
+            icon = Icons.crop_square;
+            title = 'Polígono / Área (${parsed.points.length} vértices)';
+            final areaStr = GisCalculator.formatArea(GisCalculator.calculatePolygonArea(parsed.points));
+            final perimStr = GisCalculator.formatDistance(GisCalculator.calculatePerimeter(parsed.points));
+            subtitle = 'Área: $areaStr\nPerímetro: $perimStr';
+            break;
+        }
+
+        previewWidget = Container(
+          margin: const EdgeInsets.only(bottom: 12),
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: AppColors.primaryColor.withValues(alpha: 0.06),
+            border: Border.all(color: AppColors.primaryColor.withValues(alpha: 0.4)),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(icon, color: AppColors.primaryColor, size: 28),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text('Latitud: ${lat.toStringAsFixed(6)}'),
-                    SizedBox(width: 16), // espacio entre los textos
-                    Text('Longitud: ${lng.toStringAsFixed(6)}'),
+                    Text(
+                      title,
+                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: AppColors.primaryColor),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(subtitle, style: const TextStyle(fontSize: 12, color: Colors.black87)),
                   ],
                 ),
-              ],
-            ),
-          );
-        }
-      } catch (e) {
-        print('Error al mostrar la ubicación: $e');
+              ),
+            ],
+          ),
+        );
       }
+    }
+
+    GeoGeometryType defaultType = GeoGeometryType.point;
+    final qType = question.type.toUpperCase();
+    if (qType == 'POLYGON' || qType == 'GEOSHAPE') {
+      defaultType = GeoGeometryType.polygon;
+    } else if (qType == 'LINE' || qType == 'GEOTRACE') {
+      defaultType = GeoGeometryType.line;
     }
 
     return Column(
@@ -550,24 +810,30 @@ class _SurveyDetailPageState extends State<SurveyDetailPage> {
         ElevatedButton.icon(
           icon: const Icon(Icons.map),
           label: Text(question.answer == null || question.answer!.isEmpty
-              ? 'Seleccionar ubicación'
-              : 'Cambiar ubicación'),
+              ? 'Capturar en Mapa (Punto/Línea/Polígono)'
+              : 'Editar Geometría en Mapa'),
+          style: ElevatedButton.styleFrom(
+            backgroundColor: AppColors.primaryColor,
+            foregroundColor: Colors.white,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+          ),
           onPressed: () async {
-            // Navegar a la página del mapa
             final result = await Navigator.push(
               context,
               MaterialPageRoute(
                 builder: (context) => MapInputPage(
                   initialValue: question.answer,
                   questionText: question.text,
+                  defaultGeometryType: defaultType,
+                  allowGpsOnly: question.allowGpsOnly,
                 ),
               ),
             );
 
-            // Si se seleccionó una ubicación, actualizar la respuesta
             if (result != null) {
               setState(() {
                 question.answer = result;
+                _validationErrors.remove(question.id);
               });
             }
           },
@@ -576,452 +842,210 @@ class _SurveyDetailPageState extends State<SurveyDetailPage> {
     );
   }
 
-  Widget _buildDefaultTextInput(QuestionModel question) {
-    return TextField(
-      decoration: InputDecoration(
-        hintText: 'Escribe tu respuesta aquí',
-        border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(8),
-        ),
-        focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(8),
-          borderSide: const BorderSide(color: AppColors.primaryColor, width: 2),
-        ),
-      ),
-      onChanged: (value) {
-        question.answer = value;
-      },
-      maxLines: 3,
-      controller: TextEditingController(text: question.answer),
-    );
-  }
-
-  Widget _buildDateTimeInput(QuestionModel question) {
-    // Mostrar el valor actual o un placeholder
-    final displayText = question.answer != null && question.answer!.isNotEmpty
-        ? question.answer!
-        : 'Seleccionar fecha y hora';
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        InkWell(
-          onTap: () async {
-            // Mostrar selector de fecha
-            final DateTime? pickedDate = await showDatePicker(
-              context: context,
-              initialDate: DateTime.now(),
-              firstDate: DateTime(2000),
-              lastDate: DateTime(2101),
-              builder: (context, child) {
-                return Theme(
-                  data: Theme.of(context).copyWith(
-                    colorScheme: const ColorScheme.light(
-                      primary: AppColors.primaryColor,
-                    ),
-                  ),
-                  child: child!,
-                );
-              },
-            );
-
-            if (pickedDate != null) {
-              // Mostrar selector de hora
-              final TimeOfDay? pickedTime = await showTimePicker(
-                context: context,
-                initialTime: TimeOfDay.now(),
-                builder: (context, child) {
-                  return Theme(
-                    data: Theme.of(context).copyWith(
-                      colorScheme: const ColorScheme.light(
-                        primary: AppColors.primaryColor,
-                      ),
-                    ),
-                    child: child!,
-                  );
-                },
-              );
-
-              if (pickedTime != null) {
-                // Combinar fecha y hora
-                final DateTime dateTime = DateTime(
-                  pickedDate.year,
-                  pickedDate.month,
-                  pickedDate.day,
-                  pickedTime.hour,
-                  pickedTime.minute,
-                );
-
-                setState(() {
-                  // Formatear la fecha y hora
-                  question.answer = dateTime.toString();
-                });
-              }
-            }
-          },
-          child: Container(
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              border: Border.all(color: Colors.grey),
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Text(displayText),
-                const Icon(Icons.calendar_today, color: AppColors.primaryColor),
-              ],
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildNumberInput(QuestionModel question) {
-    return TextField(
-      decoration: InputDecoration(
-        hintText: 'Ingresa un número',
-        border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(8),
-        ),
-        focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(8),
-          borderSide: const BorderSide(color: AppColors.primaryColor, width: 2),
-        ),
-      ),
-      keyboardType: TextInputType.number,
-      inputFormatters: [
-        FilteringTextInputFormatter.digitsOnly,
-      ],
-      onChanged: (value) {
-        question.answer = value;
-      },
-      controller: TextEditingController(text: question.answer),
-    );
-  }
-
-  Widget _buildEmailInput(QuestionModel question) {
-    // Usar TextEditingController para mantener el foco
-    final TextEditingController controller =
-        TextEditingController(text: question.answer);
-
-    // Posicionar el cursor al final del texto
-    controller.selection = TextSelection.fromPosition(
-      TextPosition(offset: controller.text.length),
-    );
-
-    return TextField(
-      controller: controller,
-      decoration: InputDecoration(
-        hintText: 'Ingresa un correo electrónico',
-        border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(8),
-        ),
-        focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(8),
-          borderSide: const BorderSide(color: AppColors.primaryColor, width: 2),
-        ),
-        errorText: _validateEmail(question.answer),
-      ),
-      keyboardType: TextInputType.emailAddress,
-      onChanged: (value) {
-        // Actualizar el valor sin llamar a setState para evitar reconstrucción
-        question.answer = value;
-
-        // Solo actualizar el error de validación si es necesario
-        final String? currentError = _validateEmail(value);
-        if (currentError != _validateEmail(question.answer)) {
-          setState(() {
-            // Solo actualizar el estado si cambió el error
-          });
-        }
-      },
-    );
-  }
-
-  String? _validateEmail(String? value) {
-    if (value == null || value.isEmpty) {
-      return null; // No mostrar error si está vacío
-    }
-
-    // Expresión regular para validar email
-    final emailRegex = RegExp(r'^[\w-\.]+@([\w-]+\.)+[\w-]{2,4}$');
-
-    if (!emailRegex.hasMatch(value)) {
-      return 'Ingresa un correo electrónico válido';
-    }
-
-    return null;
-  }
-
-  Widget _buildFileInput(QuestionModel question) {
-    // Mostrar el nombre del archivo si ya se ha seleccionado uno
-    String? fileName;
-    if (question.answer != null && question.answer!.isNotEmpty) {
-      try {
-        final fileData = jsonDecode(question.answer!);
-        fileName = fileData['name'];
-      } catch (e) {
-        print('Error al decodificar datos del archivo: $e');
-      }
-    }
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        if (fileName != null)
-          Container(
-            margin: EdgeInsets.only(bottom: 10),
-            padding: EdgeInsets.all(8),
-            decoration: BoxDecoration(
-              border: Border.all(color: Colors.grey),
-              borderRadius: BorderRadius.circular(4),
-            ),
-            child: Row(
-              children: [
-                Icon(Icons.insert_drive_file, color: AppColors.primaryColor),
-                SizedBox(width: 8),
-                Expanded(child: Text(fileName)),
-              ],
-            ),
-          ),
-        ElevatedButton.icon(
-          icon: Icon(Icons.attach_file),
-          label: Text(
-              fileName == null ? 'Seleccionar archivo' : 'Cambiar archivo'),
-          onPressed: () async {
-            // Aquí implementaremos la selección de archivos
-
-            FilePickerResult? result = await FilePicker.platform.pickFiles(
-              withData: true,
-            );
-            if (result != null) {
-              PlatformFile file = result.files.first;
-    
-              try {
-                // Determinar extensión desde el nombre
-                final ext = _getFileExtension(file.name);
-                final baseName =
-                    '${question.id}_${DateTime.now().millisecondsSinceEpoch}';
-    
-                // Guardar en 'uploads': si hay bytes, usarlos; si no, leer desde path
-                Map<String, String> saved;
-                if (file.bytes != null) {
-                  saved = await _saveBytesToUploads(
-                    file.bytes as Uint8List,
-                    baseName,
-                    ext.isNotEmpty ? ext : '.bin',
-                  );
-                } else if (file.path != null && file.path!.isNotEmpty) {
-                  final bytes = await File(file.path!).readAsBytes();
-                  saved = await _saveBytesToUploads(
-                    bytes,
-                    baseName,
-                    ext.isNotEmpty ? ext : '.bin',
-                  );
-                } else {
-                  // No hay forma de persistir el archivo
-                  throw Exception('El proveedor no entregó ruta ni bytes del archivo');
-                }
-    
-                setState(() {
-                  // Guardar referencia estable a lo copiado en uploads
-                  question.answer = jsonEncode({
-                    'name': saved['name'],
-                    'path': saved['path'],
-                    'size': file.size,
-                  });
-                });
-              } catch (e) {
-                // Fallback: conservar datos originales si algo falla
-                setState(() {
-                  question.answer = jsonEncode({
-                    'name': file.name,
-                    'path': file.path,
-                    'size': file.size,
-                  });
-                });
-                print('Error guardando archivo en uploads: $e');
-              }
-            }
-          },
-        ),
-      ],
-    );
-  }
-
   Widget _buildPhotoInput(QuestionModel question) {
-    Widget previewWidget = Container();
-
-    if (question.answer != null && question.answer!.isNotEmpty) {
-      try {
-        // Intentar decodificar la imagen en base64
-        final bytes = base64Decode(question.answer!);
-        previewWidget = Column(
-          children: [
-            Text('Imagen guardada:'),
-            Image.memory(
-              bytes,
-              height: 150,
-              width: double.infinity,
-              fit: BoxFit.contain,
-            ),
-          ],
-        );
-      } catch (e) {
-        previewWidget = Text('Vista previa no disponible');
-      }
-    }
-
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        if (question.answer != null && question.answer!.isNotEmpty)
-          previewWidget,
+        if (question.answer != null && question.answer!.isNotEmpty) ...[
+          Container(
+            height: 160,
+            width: double.infinity,
+            margin: const EdgeInsets.only(bottom: 10),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: Colors.grey.shade300),
+            ),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(8),
+              child: question.answer!.startsWith('data:image')
+                  ? Image.memory(
+                      base64Decode(question.answer!.split(',').last),
+                      fit: BoxFit.cover,
+                    )
+                  : Image.file(File(question.answer!), fit: BoxFit.cover),
+            ),
+          ),
+        ],
         Row(
-          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
           children: [
             ElevatedButton.icon(
-              icon: Icon(Icons.camera_alt),
-              label: Text('Tomar foto'),
-              onPressed: () async {
-                // Aquí implementaremos la captura de fotos
-                // Necesitamos agregar la dependencia image_picker
-                final ImagePicker _picker = ImagePicker();
-                final XFile? photo =
-                    await _picker.pickImage(source: ImageSource.camera);
-                if (photo != null) {
-                  final bytes = await photo.readAsBytes();
-                  setState(() {
-                    question.answer = base64Encode(bytes);
-                  });
-                }
-              },
+              icon: const Icon(Icons.camera_alt),
+              label: const Text('Cámara'),
+              onPressed: () => _pickOptimizedImage(question, ImageSource.camera),
             ),
-            ElevatedButton.icon(
-              icon: Icon(Icons.photo_library),
-              label: Text('Galería'),
-              onPressed: () async {
-                // Aquí implementaremos la selección de fotos de la galería
-                // Necesitamos agregar la dependencia image_picker
-                final ImagePicker _picker = ImagePicker();
-                final XFile? image =
-                    await _picker.pickImage(source: ImageSource.gallery);
-                if (image != null) {
-                  final bytes = await image.readAsBytes();
-                  setState(() {
-                    question.answer = base64Encode(bytes);
-                  });
-                }
-              },
+            const SizedBox(width: 8),
+            OutlinedButton.icon(
+              icon: const Icon(Icons.photo_library),
+              label: const Text('Galería'),
+              onPressed: () => _pickOptimizedImage(question, ImageSource.gallery),
             ),
           ],
         ),
       ],
     );
+  }
+
+  Future<void> _pickOptimizedImage(QuestionModel question, ImageSource source) async {
+    final picker = ImagePicker();
+    final pickedFile = await picker.pickImage(
+      source: source,
+      maxWidth: 1920,
+      maxHeight: 1080,
+      imageQuality: 80,
+    );
+
+    if (pickedFile != null) {
+      setState(() {
+        question.answer = pickedFile.path;
+        _validationErrors.remove(question.id);
+      });
+    }
   }
 
   Widget _buildSignatureInput(QuestionModel question) {
-    // Creamos el controlador de firma
-    final SignatureController _controller = SignatureController(
-      penStrokeWidth: 3,
-      penColor: AppColors.primaryColor,
-      exportBackgroundColor: Colors.white,
-    );
-
-    // Si ya hay una firma guardada, mostrarla
-    // No podemos usar addImage porque no existe ese método
-    // En su lugar, podemos mostrar la imagen guardada por separado
-    bool hasExistingSignature =
-        question.answer != null && question.answer!.isNotEmpty;
-    Uint8List? existingSignatureData;
-
-    if (hasExistingSignature) {
-      try {
-        existingSignatureData = base64Decode(question.answer!);
-      } catch (e) {
-        print('Error al cargar la firma: $e');
-      }
-    }
-
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // Si hay una firma existente, mostrarla
-        if (hasExistingSignature && existingSignatureData != null)
+        if (question.answer != null && question.answer!.isNotEmpty) ...[
           Container(
-            margin: EdgeInsets.only(bottom: 10),
-            width: double.infinity, // Ocupa todo el ancho
+            height: 120,
+            width: double.infinity,
+            margin: const EdgeInsets.only(bottom: 8),
             decoration: BoxDecoration(
-              color: Colors.white,
-              border: Border.all(color: Colors.grey),
-              borderRadius: BorderRadius.circular(4),
+              color: Colors.grey.shade100,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: Colors.grey.shade300),
             ),
-            child: Center(
-              // Centra horizontalmente la imagen
-              child: Image.memory(
-                existingSignatureData,
-                height: 150, // Altura fija
-                // No usamos 'fit', para mantener proporción original
-                // Si quieres evitar que se estire, no pongas width
-              ),
-            ),
+            child: question.answer!.startsWith('data:image')
+                ? Image.memory(base64Decode(question.answer!.split(',').last))
+                : Image.file(File(question.answer!)),
           ),
-
-        // Siempre mostrar el pad de firma para permitir una nueva firma
-        Container(
-          decoration: BoxDecoration(
-            border: Border.all(color: Colors.grey),
-            borderRadius: BorderRadius.circular(4),
-          ),
-          height: 150,
-          child: Signature(
-            controller: _controller,
-            backgroundColor: Colors.white,
-          ),
+        ],
+        ElevatedButton.icon(
+          icon: const Icon(Icons.draw),
+          label: Text(question.answer == null || question.answer!.isEmpty
+              ? 'Firmar Digitalmente'
+              : 'Modificar Firma'),
+          onPressed: () => _openSignatureDialog(question),
         ),
-        const SizedBox(height: 10),
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-          children: [
-            ElevatedButton(
-              onPressed: () {
-                _controller.clear();
-                setState(() {
-                  question.answer = null;
-                });
-              },
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.red,
-                foregroundColor: Colors.white,
-              ),
-              child: const Text('Borrar'),
+      ],
+    );
+  }
+
+  void _openSignatureDialog(QuestionModel question) {
+    final SignatureController sigController = SignatureController(
+      penStrokeWidth: 3,
+      penColor: Colors.black,
+      exportBackgroundColor: Colors.white,
+    );
+
+    showDialog(
+      context: context,
+      builder: (ctx) {
+        return AlertDialog(
+          title: const Text('Firma Digital'),
+          content: SizedBox(
+            width: 320,
+            height: 220,
+            child: Signature(
+              controller: sigController,
+              backgroundColor: Colors.grey.shade200,
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => sigController.clear(),
+              child: const Text('Limpiar'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Cancelar'),
             ),
             ElevatedButton(
               onPressed: () async {
-                if (_controller.isNotEmpty) {
-                  final Uint8List? data = await _controller.toPngBytes();
-                  if (data != null) {
-                    final String base64String = base64Encode(data);
+                if (sigController.isNotEmpty) {
+                  final bytes = await sigController.toPngBytes();
+                  if (bytes != null) {
                     setState(() {
-                      question.answer = base64String;
+                      question.answer = 'data:image/png;base64,${base64Encode(bytes)}';
+                      _validationErrors.remove(question.id);
                     });
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('Firma guardada')),
-                    );
                   }
                 }
+                Navigator.pop(ctx);
               },
+              child: const Text('Guardar Firma'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _buildFileInput(QuestionModel question) {
+    return Row(
+      children: [
+        Expanded(
+          child: Text(
+            question.answer == null || question.answer!.isEmpty
+                ? 'Ningún archivo seleccionado'
+                : 'Archivo: ${question.answer!.split('/').last}',
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+        ElevatedButton.icon(
+          icon: const Icon(Icons.attach_file),
+          label: const Text('Adjuntar'),
+          onPressed: () async {
+            final result = await FilePicker.platform.pickFiles();
+            if (result != null && result.files.single.path != null) {
+              setState(() {
+                question.answer = result.files.single.path;
+                _validationErrors.remove(question.id);
+              });
+            }
+          },
+        ),
+      ],
+    );
+  }
+
+  Widget _buildBottomActionBar() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 6, offset: Offset(0, -2))],
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: OutlinedButton.icon(
+              icon: const Icon(Icons.save_outlined),
+              label: const Text('Guardar Borrador'),
+              style: OutlinedButton.styleFrom(
+                padding: const EdgeInsets.symmetric(vertical: 14),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+              ),
+              onPressed: () => _handleSave(isDraft: true),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: ElevatedButton.icon(
+              icon: const Icon(Icons.check_circle_outline),
+              label: const Text('Finalizar Encuesta'),
               style: ElevatedButton.styleFrom(
                 backgroundColor: AppColors.primaryColor,
                 foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(vertical: 14),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
               ),
-              child: const Text('Confirmar'),
+              onPressed: () => _handleSave(isDraft: false),
             ),
-          ],
-        ),
-      ],
+          ),
+        ],
+      ),
     );
   }
 }

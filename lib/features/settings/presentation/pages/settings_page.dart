@@ -6,6 +6,9 @@ import 'package:surveygo/core/theme/app_colors.dart';
 import 'package:surveygo/features/settings/data/models/user_model.dart';
 import 'package:surveygo/features/settings/presentation/widgets/profile_section.dart';
 import 'package:surveygo/features/settings/presentation/widgets/settings_section.dart';
+import 'package:surveygo/core/utils/gis_calculator.dart';
+import 'package:file_picker/file_picker.dart';
+import 'package:surveygo/core/utils/mbtiles_service.dart';
 import 'package:surveygo/services/database_helper.dart';
 import 'package:surveygo/services/http_provider.dart';
 import 'package:surveygo/services/survey_sync_service.dart';
@@ -84,23 +87,19 @@ class _SettingsPageState extends State<SettingsPage> {
 
   Future<void> _loadResponseCount() async {
     try {
-      // Obtener todas las respuestas de la base de datos
       final db = await _dbHelper.database;
-
-      // Consulta para obtener los response_set_id únicos
-      final List<Map<String, dynamic>> uniqueResponseSets =
-          await db.rawQuery('''
+      final List<Map<String, dynamic>> uniqueResponseSets = await db.rawQuery('''
         SELECT DISTINCT response_set_id 
         FROM survey_responses 
-        WHERE response_set_id IS NOT NULL
+        WHERE response_set_id IS NOT NULL 
+          AND COALESCE(status, 'COMPLETED') = 'COMPLETED'
       ''');
 
-      // Contar el número de conjuntos de respuestas únicos
       setState(() {
         _responseCount = uniqueResponseSets.length;
       });
     } catch (e) {
-      debugPrint('Error loading response count: $e');
+      debugPrint('Error al cargar el contador de respuestas: $e');
     }
   }
 
@@ -135,17 +134,16 @@ class _SettingsPageState extends State<SettingsPage> {
     });
 
     try {
-      // Get all surveys
       final surveys = await _dbHelper.getSurveys();
       int successCount = 0;
       int errorCount = 0;
 
       for (var survey in surveys) {
-        final responses =
-            await _dbHelper.getResponsesBySurvey(survey.id.toString());
+        final allResponses = await _dbHelper.getResponsesBySurvey(survey.id.toString());
+        // Filtrar únicamente aquellas que están en estado COMPLETED (no borradores ni ya sincronizadas)
+        final responses = allResponses.where((r) => (r['status'] ?? 'COMPLETED').toString().toUpperCase() == 'COMPLETED').toList();
 
         if (responses.isNotEmpty) {
-          // Group responses by survey
           Map<String, List<Map<String, dynamic>>> responsesBySurvey = {};
 
           for (var response in responses) {
@@ -156,13 +154,10 @@ class _SettingsPageState extends State<SettingsPage> {
             responsesBySurvey[surveyId]!.add(response);
           }
 
-          // Send each group of responses
           for (var entry in responsesBySurvey.entries) {
             final result = await _sendSurveyResponses(entry.key, entry.value);
             if (result) {
               successCount++;
-              // Delete sent responses from local DB
-              await _dbHelper.deleteResponsesBySurvey(entry.key);
             } else {
               errorCount++;
             }
@@ -283,7 +278,9 @@ class _SettingsPageState extends State<SettingsPage> {
         final success = result != null &&
             (result['status'] == 'success' || result['status'] == 'ok');
 
-        if (!success) {
+        if (success) {
+          await _dbHelper.updateResponseSetStatus(responseSetId, 'SYNCED');
+        } else {
           allSuccessful = false;
         }
       }
@@ -344,6 +341,58 @@ class _SettingsPageState extends State<SettingsPage> {
                   ),
                   const SizedBox(height: 16),
                   SettingsSection(
+                    title: 'Mapas Base Offline (MBTiles)',
+                    children: [
+                      ListTile(
+                        leading: const Icon(Icons.map_outlined,
+                            color: AppColors.primaryColor),
+                        title: const Text('Capa Satelital / Vectorial Local'),
+                        subtitle: Text(
+                          MbtilesService().isMbtilesAvailable
+                              ? 'Cargado: ${MbtilesService().layerName}\n(${MbtilesService().loadedFilePath})'
+                              : 'Ningún archivo .mbtiles cargado actualmente',
+                        ),
+                        trailing: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            if (MbtilesService().isMbtilesAvailable)
+                              IconButton(
+                                icon: const Icon(Icons.delete_outline, color: Colors.red),
+                                tooltip: 'Quitar MBTiles',
+                                onPressed: () async {
+                                  await MbtilesService().close();
+                                  setState(() {});
+                                },
+                              ),
+                            IconButton(
+                              icon: const Icon(Icons.folder_open, color: AppColors.primaryColor),
+                              tooltip: 'Seleccionar archivo .mbtiles',
+                              onPressed: () async {
+                                final result = await FilePicker.platform.pickFiles(
+                                  type: FileType.custom,
+                                  allowedExtensions: ['mbtiles', 'sqlite', 'db'],
+                                );
+                                if (result != null && result.files.single.path != null) {
+                                  final ok = await MbtilesService().loadMbtiles(result.files.single.path!);
+                                  if (mounted) {
+                                    setState(() {});
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      SnackBar(
+                                        content: Text(ok ? 'Mapa MBTiles cargado correctamente' : 'Error al leer el archivo MBTiles'),
+                                        backgroundColor: ok ? AppColors.successColor : AppColors.errorColor,
+                                      ),
+                                    );
+                                  }
+                                }
+                              },
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                  SettingsSection(
                     title: 'Cuenta',
                     children: [
                       ListTile(
@@ -377,39 +426,12 @@ class _SettingsPageState extends State<SettingsPage> {
 
 dynamic _parseCoordinates(String coordinates) {
   try {
-    // Intentar parsear como JSON
-    final decoded = jsonDecode(coordinates);
-
-    if (decoded is Map<String, dynamic>) {
-      // Si ya es un GeoJSON válido, lo normalizamos
-      if (decoded.containsKey('type') && decoded.containsKey('coordinates')) {
-        final coords = decoded['coordinates'];
-        if (coords is List) {
-          // Convertir a lista de double
-          return {
-            "type": decoded["type"],
-            "coordinates": coords.map((c) => (c as num).toDouble()).toList(),
-          };
-        }
-      }
+    final parsed = GisCalculator.fromGeoJsonOrString(coordinates);
+    if (parsed != null) {
+      return GisCalculator.toGeoJson(parsed.type, parsed.points);
     }
-  } catch (_) {
-    // Si falla el jsonDecode, tratamos como "lat,lon"
-    if (coordinates.contains(',')) {
-      final parts = coordinates.split(',');
-      if (parts.length == 2) {
-        final lat = double.tryParse(parts[0].trim());
-        final lon = double.tryParse(parts[1].trim());
-        if (lat != null && lon != null) {
-          return {
-            "type": "Point",
-            "coordinates": [lon, lat] // ⚠️ [longitud, latitud]
-          };
-        }
-      }
-    }
+  } catch (e) {
+    debugPrint('Error parseando geometría en sincronización: $e');
   }
-
-  // Si no se puede parsear, devolvemos null
   return null;
 }

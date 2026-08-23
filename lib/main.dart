@@ -2,30 +2,30 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:surveygo/core/navigation/home_navigation.dart';
 import 'package:surveygo/core/theme/app_colors.dart';
+import 'package:surveygo/env.dart' as env;
 import 'package:surveygo/features/login/presentation/pages/login_page.dart';
 import 'package:surveygo/features/settings/presentation/pages/qr_setup_page.dart';
 import 'package:surveygo/features/splash/presentation/pages/splash_screen.dart';
+import 'package:surveygo/core/utils/mbtiles_service.dart';
 import 'package:surveygo/services/http_provider.dart';
 
-void main() {
+void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await MbtilesService().init();
   runApp(const MyApp());
 }
 
 Future<String> checkSession() async {
   final prefs = await SharedPreferences.getInstance();
 
-  // Primero verificar si existe configuración del QR
-  final ip = prefs.getString('config_ip') ?? '';
-  final idSistema = prefs.getString('config_id_sistema') ?? '';
-  final idCliente = prefs.getString('config_id_cliente') ?? '';
-  final hasConfig =
-      ip.isNotEmpty && idSistema.isNotEmpty && idCliente.isNotEmpty;
-  if (!hasConfig) {
-    return '/qr-setup';
+  // Asegurar que siempre exista configuración precargando env.dart automáticamente
+  if (!prefs.containsKey('config_ip') || (prefs.getString('config_ip') ?? '').isEmpty) {
+    await prefs.setString('config_ip', env.ip);
+    await prefs.setString('config_id_sistema', env.id_sistema.trim());
+    await prefs.setString('config_id_cliente', env.id_cliente.trim());
   }
 
-  // Luego flujo de sesión
+  // Flujo de sesión
   final isLoggedIn = prefs.getBool('isLoggedIn') ?? false;
 
   if (isLoggedIn) {

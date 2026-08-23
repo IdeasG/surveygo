@@ -1,5 +1,8 @@
 # Project-level configuration.
 cmake_minimum_required(VERSION 3.14)
+
+# Fix for missing nuget.exe in geolocator_windows
+set(NUGET "${CMAKE_CURRENT_SOURCE_DIR}/../tools/nuget.exe")
 project(surveygo LANGUAGES CXX)
 
 # The name of the executable created for the application. Change this to change

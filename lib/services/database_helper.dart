@@ -1,5 +1,9 @@
+import 'dart:async';
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
+import 'package:flutter/foundation.dart';
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
+import 'package:sqflite_common_ffi_web/sqflite_ffi_web.dart';
 import 'package:surveygo/features/surveys/data/models/survey_question_model.dart';
 import 'package:surveygo/features/surveys/data/models/survey_response_model.dart';
 
@@ -11,17 +15,43 @@ class DatabaseHelper {
 
   DatabaseHelper._internal();
 
+  static Completer<Database>? _dbCompleter;
+
   Future<Database> get database async {
     if (_database != null) return _database!;
-    _database = await _initDatabase();
+    
+    if (_dbCompleter != null) return _dbCompleter!.future;
+
+    _dbCompleter = Completer<Database>();
+    try {
+      _database = await _initDatabase();
+      _dbCompleter!.complete(_database);
+    } catch (e) {
+      _dbCompleter!.completeError(e);
+      _dbCompleter = null; // Re-attempt on error
+      rethrow;
+    }
     return _database!;
   }
 
   Future<Database> _initDatabase() async {
+    if (kIsWeb) {
+      databaseFactory = databaseFactoryFfiWeb;
+      return await openDatabase(
+        'surveygo.db',
+        version: 2,
+        onCreate: _createDb,
+      );
+    } else if (defaultTargetPlatform == TargetPlatform.windows ||
+        defaultTargetPlatform == TargetPlatform.linux ||
+        defaultTargetPlatform == TargetPlatform.macOS) {
+      databaseFactory = databaseFactoryFfi;
+    }
+
     String path = join(await getDatabasesPath(), 'surveygo.db');
     return await openDatabase(
       path,
-      version: 1,
+      version: 2,
       onCreate: _createDb,
     );
   }
@@ -49,6 +79,7 @@ class DatabaseHelper {
         FOREIGN KEY (id_encuesta) REFERENCES encuestas (id) ON DELETE CASCADE
       )
     ''');
+
     await db.execute('''
       CREATE TABLE survey_responses (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -60,6 +91,7 @@ class DatabaseHelper {
         c_extension TEXT,
         glgis TEXT,
         response_set_id TEXT,
+        status TEXT DEFAULT 'COMPLETED',
         fecha_creacion TEXT DEFAULT CURRENT_TIMESTAMP
       )
     ''');
@@ -97,13 +129,25 @@ class DatabaseHelper {
     final List<Map<String, dynamic>> maps = await db.query('encuestas');
 
     return List.generate(maps.length, (i) {
+      final dateStr = maps[i]['fecha_creacion']?.toString();
+      DateTime date = DateTime.now();
+      if (dateStr != null && dateStr.isNotEmpty) {
+        date = DateTime.tryParse(dateStr) ?? DateTime.now();
+      }
+
       return SurveyRolModel(
-        id: maps[i]['id'],
-        cNombreEncuesta: maps[i]['nombre_encuesta'],
-        cTipo: maps[i]['tipo'],
-        dFechaCreacion: DateTime.parse(maps[i]['fecha_creacion']),
-        idRol: maps[i]['id_rol'],
-        idFuente: maps[i]['id_fuente'],
+        id: maps[i]['id'] is int
+            ? maps[i]['id']
+            : (int.tryParse(maps[i]['id']?.toString() ?? '0') ?? 0),
+        cNombreEncuesta: maps[i]['nombre_encuesta']?.toString() ?? '',
+        cTipo: maps[i]['tipo']?.toString() ?? '',
+        dFechaCreacion: date,
+        idRol: maps[i]['id_rol'] is int
+            ? maps[i]['id_rol']
+            : (int.tryParse(maps[i]['id_rol']?.toString() ?? '0') ?? 0),
+        idFuente: maps[i]['id_fuente'] is int
+            ? maps[i]['id_fuente']
+            : (int.tryParse(maps[i]['id_fuente']?.toString() ?? '0') ?? 0),
       );
     });
   }
@@ -213,6 +257,78 @@ class DatabaseHelper {
         whereArgs: [surveyId],
       );
     }
+  }
+
+  Future<List<Map<String, dynamic>>> getResponsesBySetId(String responseSetId) async {
+    final db = await database;
+    return await db.query(
+      'survey_responses',
+      where: 'response_set_id = ?',
+      whereArgs: [responseSetId],
+    );
+  }
+
+  Future<int> updateResponseSetStatus(String responseSetId, String newStatus) async {
+    final db = await database;
+    return await db.update(
+      'survey_responses',
+      {'status': newStatus},
+      where: 'response_set_id = ?',
+      whereArgs: [responseSetId],
+    );
+  }
+
+  Future<List<Map<String, dynamic>>> getAllSubmissionsGrouped({String? statusFilter}) async {
+    final db = await database;
+    String query = '''
+      SELECT 
+        r.response_set_id,
+        r.id_encuesta,
+        COALESCE(e.nombre_encuesta, 'Encuesta #' || r.id_encuesta) as nombre_encuesta,
+        COALESCE(r.status, 'COMPLETED') as status,
+        MIN(r.fecha_creacion) as fecha_creacion,
+        COUNT(r.id) as total_respuestas,
+        (SELECT glgis FROM survey_responses WHERE response_set_id = r.response_set_id AND glgis IS NOT NULL AND glgis != '' LIMIT 1) as glgis_sample
+      FROM survey_responses r
+      LEFT JOIN encuestas e ON CAST(r.id_encuesta AS INTEGER) = e.id
+    ''';
+
+    List<dynamic> args = [];
+    if (statusFilter != null && statusFilter.isNotEmpty) {
+      query += ' WHERE COALESCE(r.status, "COMPLETED") = ? ';
+      args.add(statusFilter);
+    }
+
+    query += ' GROUP BY r.response_set_id, r.id_encuesta, e.nombre_encuesta, r.status ORDER BY fecha_creacion DESC';
+
+    try {
+      return await db.rawQuery(query, args);
+    } catch (_) {
+      // Fallback si la columna status aún no existiera en una BD creada previamente
+      return await db.rawQuery('''
+        SELECT 
+          r.response_set_id,
+          r.id_encuesta,
+          COALESCE(e.nombre_encuesta, 'Encuesta #' || r.id_encuesta) as nombre_encuesta,
+          'COMPLETED' as status,
+          MIN(r.fecha_creacion) as fecha_creacion,
+          COUNT(r.id) as total_respuestas,
+          (SELECT glgis FROM survey_responses WHERE response_set_id = r.response_set_id AND glgis IS NOT NULL LIMIT 1) as glgis_sample
+        FROM survey_responses r
+        LEFT JOIN encuestas e ON CAST(r.id_encuesta AS INTEGER) = e.id
+        GROUP BY r.response_set_id, r.id_encuesta, e.nombre_encuesta
+        ORDER BY fecha_creacion DESC
+      ''');
+    }
+  }
+
+  Future<int> deleteResponseSet(String responseSetId) async {
+    final db = await database;
+    return await db.delete(
+      'survey_responses',
+      where: 'response_set_id = ?',
+      whereArgs: [responseSetId],
+    );
   }
 
   Future<void> close() async {
