@@ -5,7 +5,6 @@ import 'package:geolocator/geolocator.dart';
 import 'package:surveygo/features/surveys/data/models/survey_model.dart';
 import 'package:surveygo/features/surveys/presentation/pages/survey_detail_page.dart';
 import 'package:surveygo/core/theme/app_colors.dart';
-import 'package:surveygo/env.dart';
 
 class SurveyMapPage extends StatefulWidget {
   final SurveyModel survey;
@@ -147,7 +146,7 @@ class _SurveyMapPageState extends State<SurveyMapPage> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Row(
-                        mainAxisAlignment: MainAxisAlignment.between,
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
                           Row(
                             children: [

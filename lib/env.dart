@@ -1,10 +1,11 @@
 // Archivo de configuración de entorno
 
-// Dirección IP y puerto del servidor
-String ip = '84.247.176.139:5004';
+// Dirección del servidor (dominio HTTPS de producción o IP:puerto)
+String ip = 'glgisclienteb.ideasg.org';
 
-// Identificadores del sistema y cliente
-String id_sistema = "43 ";
-String id_cliente = "95";
+// Identificadores del sistema y cliente por defecto (La Molina / SAT Admin)
+String id_sistema = "48";
+String id_cliente = "226";
 
-String geoserverBaseUrl = 'http://84.247.176.139:8080/geoserver/workspace/wms?';
+String geoserverBaseUrl = 'https://geoserver140.ideasg.org/geoserver/bd_lamolina2026/wms?';
+

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:surveygo/core/theme/app_colors.dart';
 import 'package:surveygo/features/login/data/models/login_model.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:surveygo/env.dart' as env;
 
 class LoginForm extends StatefulWidget {
   final Function(LoginModel, bool) onSubmit;
@@ -30,13 +31,13 @@ class _LoginFormState extends State<LoginForm> {
   void _submitForm() async {
     if (_formKey.currentState!.validate()) {
       final prefs = await SharedPreferences.getInstance();
-      final idSistema = prefs.getString('config_id_sistema') ?? '';
+      final idSistema = (prefs.getString('config_id_sistema') ?? env.id_sistema).trim();
 
       if (idSistema.isEmpty) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
-                content: Text('Falta configuración. Escanee el QR primero.')),
+                content: Text('Falta configuración. Escanee el QR o configure en Ajustes.')),
           );
           Navigator.pushReplacementNamed(context, '/qr-setup');
         }

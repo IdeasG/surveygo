@@ -5,17 +5,12 @@ import 'package:surveygo/env.dart' as env;
 import 'package:shared_preferences/shared_preferences.dart';
 
 class HttpProvider {
-  // URL base para las solicitudes API
-  final String _baseUrl;
-
   // Headers por defecto para las solicitudes
-  // Headers por defecto (sin env.dart)
   final Map<String, String> _baseHeaders = {
     "Content-Type": "application/json",
   };
 
-  // Constructor sin dependencia de env.dart
-  HttpProvider() : _baseUrl = '';
+  HttpProvider();
 
   void updateHeaders(Map<String, String> newHeaders) {
     _baseHeaders.addAll(newHeaders);
@@ -32,8 +27,8 @@ class HttpProvider {
         headers['Authorization'] = 'Bearer $token';
       }
 
-      final clientId = prefs.getString('config_id_cliente');
-      if (clientId != null && clientId.isNotEmpty) {
+      final clientId = (prefs.getString('config_id_cliente') ?? env.id_cliente).trim();
+      if (clientId.isNotEmpty) {
         headers['x-id-cliente'] = clientId;
       }
     } catch (e) {
@@ -50,16 +45,21 @@ class HttpProvider {
     final raw = (prefs.getString('config_ip') ?? env.ip).trim();
 
     if (raw.isEmpty) {
-      throw Exception('Configuración no encontrada. Escanee el QR primero.');
+      throw Exception('Configuración no encontrada. Escanee el QR o configure el servidor.');
     }
 
-    final uri = Uri.parse(raw.contains('://') ? raw : 'https://$raw');
-    if (uri.host.isEmpty) {
-      throw Exception('Configuración inválida: config_ip=$raw');
+    Uri uri;
+    if (raw.startsWith('http://') || raw.startsWith('https://')) {
+      uri = Uri.parse(raw);
+    } else if (raw.contains(':') || RegExp(r'^\d+\.\d+\.\d+\.\d+').hasMatch(raw)) {
+      // Dirección IP directa o puerto local sin SSL -> usar http
+      uri = Uri.parse('http://$raw');
+    } else {
+      // Dominio estándar -> usar https
+      uri = Uri.parse('https://$raw');
     }
 
-    final normalized = uri.replace(scheme: 'https');
-    final url = normalized.toString();
+    final url = uri.toString();
     return url.endsWith('/') ? url.substring(0, url.length - 1) : url;
   }
 
@@ -76,7 +76,11 @@ class HttpProvider {
         print('GET Request: $uri');
       }
 
-      final response = await http.get(uri, headers: headers);
+      final response = await http
+          .get(uri, headers: headers)
+          .timeout(const Duration(seconds: 15), onTimeout: () {
+        throw Exception('Tiempo de espera agotado al conectar con el servidor ($uri).');
+      });
       return _processResponse(response);
     } catch (e) {
       throw Exception('Error en solicitud GET: $e');
@@ -95,11 +99,15 @@ class HttpProvider {
         print('Body: $body');
       }
 
-      final response = await http.post(
-        uri,
-        headers: headers,
-        body: jsonEncode(body),
-      );
+      final response = await http
+          .post(
+            uri,
+            headers: headers,
+            body: jsonEncode(body),
+          )
+          .timeout(const Duration(seconds: 15), onTimeout: () {
+        throw Exception('Tiempo de espera agotado al conectar con el servidor ($uri).');
+      });
       return _processResponse(response);
     } catch (e) {
       throw Exception('Error en solicitud POST: $e');
@@ -118,11 +126,15 @@ class HttpProvider {
         print('Body: $body');
       }
 
-      final response = await http.put(
-        uri,
-        headers: headers,
-        body: jsonEncode(body),
-      );
+      final response = await http
+          .put(
+            uri,
+            headers: headers,
+            body: jsonEncode(body),
+          )
+          .timeout(const Duration(seconds: 15), onTimeout: () {
+        throw Exception('Tiempo de espera agotado al conectar con el servidor ($uri).');
+      });
       return _processResponse(response);
     } catch (e) {
       throw Exception('Error en solicitud PUT: $e');
@@ -140,7 +152,11 @@ class HttpProvider {
         print('DELETE Request: $uri');
       }
 
-      final response = await http.delete(uri, headers: headers);
+      final response = await http
+          .delete(uri, headers: headers)
+          .timeout(const Duration(seconds: 15), onTimeout: () {
+        throw Exception('Tiempo de espera agotado al conectar con el servidor ($uri).');
+      });
       return _processResponse(response);
     } catch (e) {
       throw Exception('Error en solicitud DELETE: $e');
