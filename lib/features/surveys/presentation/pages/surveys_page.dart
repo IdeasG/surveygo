@@ -31,13 +31,10 @@ class _SurveysPageState extends State<SurveysPage> {
   @override
   void initState() {
     super.initState();
-    // Inicializar inmediatamente las plantillas para carga instantánea
-    _allSurveys = _getFallbackSurveys();
-    _applyFilters();
-    _isLoading = false;
-
     _loadUserInfo();
-    _loadSurveys();
+    _loadSurveys().then((_) {
+      _syncWithServer();
+    });
   }
 
   Future<void> _loadUserInfo() async {
@@ -356,8 +353,7 @@ class _SurveysPageState extends State<SurveysPage> {
       ),
       body: RefreshIndicator(
         onRefresh: () async {
-          await _loadUserInfo();
-          await _loadSurveys();
+          await _syncWithServer();
         },
         child: Column(
           children: [
