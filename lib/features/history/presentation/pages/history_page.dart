@@ -7,6 +7,7 @@ import 'package:surveygo/core/utils/gis_calculator.dart';
 import 'package:surveygo/features/surveys/data/models/survey_model.dart';
 import 'package:surveygo/features/surveys/presentation/pages/survey_detail_page.dart';
 import 'package:surveygo/services/database_helper.dart';
+import 'package:surveygo/services/survey_sync_service.dart';
 
 class HistoryPage extends StatefulWidget {
   const HistoryPage({Key? key}) : super(key: key);
@@ -19,6 +20,7 @@ class _HistoryPageState extends State<HistoryPage> with SingleTickerProviderStat
   late TabController _tabController;
   final DatabaseHelper _dbHelper = DatabaseHelper();
   bool _isLoading = false;
+  bool _isSyncing = false;
   bool _showMapView = false;
 
   List<Map<String, dynamic>> _draftSubmissions = [];
@@ -124,6 +126,62 @@ class _HistoryPageState extends State<HistoryPage> with SingleTickerProviderStat
     }
   }
 
+  Future<void> _syncAll() async {
+    setState(() => _isSyncing = true);
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final res = await SurveySyncService().sendAllCompletedResponses();
+      if (mounted) {
+        messenger.showSnackBar(
+          SnackBar(
+            content: Text(res.message),
+            backgroundColor: res.errorCount == 0 ? AppColors.successColor : AppColors.warningColor,
+          ),
+        );
+        await _loadHistory();
+      }
+    } catch (e) {
+      if (mounted) {
+        messenger.showSnackBar(
+          SnackBar(
+            content: Text('Error al sincronizar: $e'),
+            backgroundColor: AppColors.errorColor,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isSyncing = false);
+    }
+  }
+
+  Future<void> _syncSingle(String setId) async {
+    setState(() => _isSyncing = true);
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final ok = await SurveySyncService().sendSingleResponseSet(setId);
+      if (mounted) {
+        messenger.showSnackBar(
+          SnackBar(
+            content: Text(ok ? 'Encuesta sincronizada con éxito' : 'Error al sincronizar con el servidor'),
+            backgroundColor: ok ? AppColors.successColor : AppColors.errorColor,
+          ),
+        );
+        await _loadHistory();
+      }
+    } catch (e) {
+      if (mounted) {
+        messenger.showSnackBar(
+          SnackBar(
+            content: Text('Error: $e'),
+            backgroundColor: AppColors.errorColor,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isSyncing = false);
+    }
+  }
+
   Future<void> _openSubmissionDetail(Map<String, dynamic> submission) async {
     final responseSetId = submission['response_set_id'].toString();
     final responses = await _dbHelper.getResponsesBySetId(responseSetId);
@@ -206,6 +264,21 @@ class _HistoryPageState extends State<HistoryPage> with SingleTickerProviderStat
                                 ),
                               );
                               _loadHistory();
+                            },
+                          ),
+                        )
+                      else if ((submission['status'] ?? '').toString().toUpperCase() == 'COMPLETED')
+                        Expanded(
+                          child: ElevatedButton.icon(
+                            icon: const Icon(Icons.cloud_upload),
+                            label: const Text('Sincronizar ahora'),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: AppColors.primaryColor,
+                              foregroundColor: Colors.white,
+                            ),
+                            onPressed: () async {
+                              Navigator.pop(ctx);
+                              await _syncSingle(responseSetId);
                             },
                           ),
                         ),
@@ -353,14 +426,18 @@ class _HistoryPageState extends State<HistoryPage> with SingleTickerProviderStat
                   controller: _tabController,
                   children: [
                     _buildSubmissionsList(_draftSubmissions, isDraftList: true),
-                    _buildSubmissionsList(_completedSubmissions),
+                    _buildSubmissionsList(_completedSubmissions, isCompletedList: true),
                     _buildSubmissionsList(_syncedSubmissions),
                   ],
                 ),
     );
   }
 
-  Widget _buildSubmissionsList(List<Map<String, dynamic>> list, {bool isDraftList = false}) {
+  Widget _buildSubmissionsList(
+    List<Map<String, dynamic>> list, {
+    bool isDraftList = false,
+    bool isCompletedList = false,
+  }) {
     if (list.isEmpty) {
       return Center(
         child: Column(
@@ -369,7 +446,11 @@ class _HistoryPageState extends State<HistoryPage> with SingleTickerProviderStat
             Icon(Icons.inbox_outlined, size: 64, color: Colors.grey.shade400),
             const SizedBox(height: 12),
             Text(
-              isDraftList ? 'No tienes borradores pendientes' : 'No hay registros en esta sección',
+              isDraftList
+                  ? 'No tienes borradores pendientes'
+                  : (isCompletedList
+                      ? 'No hay encuestas pendientes de sincronizar'
+                      : 'No hay registros en esta sección'),
               style: TextStyle(color: Colors.grey.shade600, fontSize: 16),
             ),
           ],
@@ -377,43 +458,112 @@ class _HistoryPageState extends State<HistoryPage> with SingleTickerProviderStat
       );
     }
 
-    return ListView.builder(
-      padding: const EdgeInsets.all(12),
-      itemCount: list.length,
-      itemBuilder: (ctx, idx) {
-        final item = list[idx];
-        final hasGis = item['glgis_sample'] != null && item['glgis_sample'].toString().isNotEmpty;
-
-        return Card(
-          elevation: 2,
-          margin: const EdgeInsets.only(bottom: 10),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-          child: ListTile(
-            contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-            leading: CircleAvatar(
-              backgroundColor: isDraftList ? Colors.orange.shade100 : AppColors.primaryColor.withValues(alpha: 0.15),
-              child: Icon(
-                hasGis ? Icons.pin_drop : Icons.assignment,
-                color: isDraftList ? Colors.orange.shade800 : AppColors.primaryColor,
-              ),
+    return Column(
+      children: [
+        if (isCompletedList)
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            margin: const EdgeInsets.fromLTRB(12, 12, 12, 4),
+            decoration: BoxDecoration(
+              color: AppColors.primaryColor.withValues(alpha: 0.08),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: AppColors.primaryColor.withValues(alpha: 0.2)),
             ),
-            title: Text(
-              item['nombre_encuesta'] ?? 'Encuesta',
-              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
-            ),
-            subtitle: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+            child: Row(
               children: [
-                const SizedBox(height: 4),
-                Text('Fecha: ${item['fecha_creacion'] ?? ''}', style: TextStyle(fontSize: 12, color: Colors.grey.shade600)),
-                Text('${item['total_respuestas']} campos respondidos', style: TextStyle(fontSize: 12, color: Colors.grey.shade700)),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        '${list.length} encuesta(s) lista(s) para sincronizar',
+                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        'Sube los datos al servidor para verlos en el mapa web',
+                        style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 8),
+                ElevatedButton.icon(
+                  icon: _isSyncing
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                        )
+                      : const Icon(Icons.cloud_upload, size: 18),
+                  label: Text(_isSyncing ? 'Enviando...' : 'Sincronizar todo'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.primaryColor,
+                    foregroundColor: Colors.white,
+                    elevation: 2,
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                  ),
+                  onPressed: _isSyncing ? null : _syncAll,
+                ),
               ],
             ),
-            trailing: _buildStatusBadge(item['status']),
-            onTap: () => _openSubmissionDetail(item),
           ),
-        );
-      },
+        Expanded(
+          child: ListView.builder(
+            padding: const EdgeInsets.all(12),
+            itemCount: list.length,
+            itemBuilder: (ctx, idx) {
+              final item = list[idx];
+              final hasGis = item['glgis_sample'] != null && item['glgis_sample'].toString().isNotEmpty;
+              final setId = item['response_set_id']?.toString() ?? '';
+
+              return Card(
+                elevation: 2,
+                margin: const EdgeInsets.only(bottom: 10),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                child: ListTile(
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  leading: CircleAvatar(
+                    backgroundColor: isDraftList ? Colors.orange.shade100 : AppColors.primaryColor.withValues(alpha: 0.15),
+                    child: Icon(
+                      hasGis ? Icons.pin_drop : Icons.assignment,
+                      color: isDraftList ? Colors.orange.shade800 : AppColors.primaryColor,
+                    ),
+                  ),
+                  title: Text(
+                    item['nombre_encuesta'] ?? 'Encuesta',
+                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+                  ),
+                  subtitle: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const SizedBox(height: 4),
+                      Text('Fecha: ${item['fecha_creacion'] ?? ''}', style: TextStyle(fontSize: 12, color: Colors.grey.shade600)),
+                      Text('${item['total_respuestas']} campos respondidos', style: TextStyle(fontSize: 12, color: Colors.grey.shade700)),
+                    ],
+                  ),
+                  trailing: isCompletedList
+                      ? Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            _buildStatusBadge(item['status']),
+                            const SizedBox(width: 4),
+                            IconButton(
+                              icon: const Icon(Icons.cloud_upload_outlined, color: AppColors.primaryColor),
+                              tooltip: 'Sincronizar encuesta',
+                              onPressed: _isSyncing ? null : () => _syncSingle(setId),
+                            ),
+                          ],
+                        )
+                      : _buildStatusBadge(item['status']),
+                  onTap: () => _openSubmissionDetail(item),
+                ),
+              );
+            },
+          ),
+        ),
+      ],
     );
   }
 

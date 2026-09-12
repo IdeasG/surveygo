@@ -334,6 +334,7 @@ class _SurveyDetailPageState extends State<SurveyDetailPage> {
           case 'GEOSHAPE':
           case 'GEOTRACE':
           case 'GEOPOINT':
+          case 'POINT':
             if (question.answer != null && question.answer!.isNotEmpty) {
               final parsed = GisCalculator.fromGeoJsonOrString(question.answer);
               if (parsed != null) {
@@ -342,20 +343,31 @@ class _SurveyDetailPageState extends State<SurveyDetailPage> {
               } else {
                 responseData['glgis'] = question.answer;
               }
-              responseData['c_respuesta'] = null;
+              responseData['c_respuesta'] = question.answer;
             }
             break;
 
           case 'COORDINATE':
-            final geoJson = {
-              "type": "Point",
-              "coordinates": [
-                _currentLocation.longitude,
-                _currentLocation.latitude
-              ]
-            };
-            responseData['glgis'] = jsonEncode(geoJson);
-            responseData['c_respuesta'] = null;
+            if (question.answer != null && question.answer!.isNotEmpty) {
+              final parsed = GisCalculator.fromGeoJsonOrString(question.answer);
+              if (parsed != null) {
+                final geoJsonMap = GisCalculator.toGeoJson(parsed.type, parsed.points);
+                responseData['glgis'] = jsonEncode(geoJsonMap);
+              } else {
+                responseData['glgis'] = question.answer;
+              }
+              responseData['c_respuesta'] = question.answer;
+            } else {
+              final geoJson = {
+                "type": "Point",
+                "coordinates": [
+                  _currentLocation.longitude,
+                  _currentLocation.latitude
+                ]
+              };
+              responseData['glgis'] = jsonEncode(geoJson);
+              responseData['c_respuesta'] = '${_currentLocation.latitude}, ${_currentLocation.longitude}';
+            }
             break;
 
           default:

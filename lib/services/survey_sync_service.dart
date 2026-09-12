@@ -1,4 +1,7 @@
+import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/foundation.dart';
+import 'package:surveygo/core/utils/gis_calculator.dart';
 import 'package:surveygo/features/surveys/data/models/survey_question_model.dart';
 import 'package:surveygo/features/surveys/data/models/survey_response_model.dart';
 import 'package:surveygo/services/database_helper.dart';
@@ -253,5 +256,148 @@ class SurveySyncService {
     }
 
     return surveys;
+  }
+
+  dynamic parseCoordinates(dynamic coordinates) {
+    if (coordinates == null) return null;
+    if (coordinates is Map) return coordinates;
+    final str = coordinates.toString().trim();
+    if (str.isEmpty) return null;
+
+    if (str.startsWith('{') && str.endsWith('}')) {
+      try {
+        final decoded = jsonDecode(str);
+        if (decoded is Map && decoded.containsKey('type') && decoded.containsKey('coordinates')) {
+          return decoded;
+        }
+      } catch (_) {}
+    }
+
+    try {
+      final parsed = GisCalculator.fromGeoJsonOrString(str);
+      if (parsed != null) {
+        return GisCalculator.toGeoJson(parsed.type, parsed.points);
+      }
+    } catch (e) {
+      debugPrint('Error parseando geometría en sincronización: $e');
+    }
+    return null;
+  }
+
+  Future<bool> sendSingleResponseSet(String responseSetId) async {
+    try {
+      final db = await _databaseHelper.database;
+      final responses = await db.query(
+        'survey_responses',
+        where: 'response_set_id = ?',
+        whereArgs: [responseSetId],
+      );
+
+      if (responses.isEmpty) return false;
+
+      final surveyId = responses.first['id_encuesta'].toString();
+      List<Map<String, dynamic>> formattedResponses = [];
+
+      for (var response in responses) {
+        String? respuesta = response['c_respuesta']?.toString();
+        final tipo = response['c_tipo_pregunta']?.toString().toUpperCase();
+        final nombreFile = response['c_nombre_file']?.toString();
+        final extension = response['c_extension']?.toString();
+
+        if ((tipo == 'PHOTO' || tipo == 'FILE' || tipo == 'SIGNATURE') &&
+            respuesta != null &&
+            respuesta.isNotEmpty) {
+          try {
+            final file = File(respuesta);
+            if (await file.exists()) {
+              final bytes = await file.readAsBytes();
+              respuesta = base64Encode(bytes);
+            }
+          } catch (e) {
+            debugPrint('No se pudo leer archivo para respuesta: $e');
+          }
+        }
+
+        formattedResponses.add({
+          'id_pregunta': int.tryParse(response['id_pregunta'].toString()) ?? 0,
+          'c_tipo_pregunta': response['c_tipo_pregunta'],
+          'c_respuesta': respuesta,
+          'c_nombre_file': nombreFile,
+          'c_extension': extension,
+          'glgis': response['glgis'] != null ? parseCoordinates(response['glgis']) : null,
+        });
+      }
+
+      final requestBody = {
+        'respuesta': {
+          'id_encuesta': int.tryParse(surveyId) ?? 0,
+          'id_campo_geometria': null,
+          'response_set_id': responseSetId,
+        },
+        'respuestasPregunta': formattedResponses,
+      };
+
+      final result = await _httpProvider.post(
+        '/encuestas/respuesta/insertarConPreguntas',
+        body: requestBody,
+      );
+
+      final success = result != null &&
+          (result['status'] == 'success' || result['status'] == 'ok');
+
+      if (success) {
+        await _databaseHelper.updateResponseSetStatus(responseSetId, 'SYNCED');
+        return true;
+      }
+      return false;
+    } catch (e) {
+      debugPrint('Error enviando response_set $responseSetId: $e');
+      return false;
+    }
+  }
+
+  Future<({int successCount, int errorCount, String message})> sendAllCompletedResponses() async {
+    try {
+      final db = await _databaseHelper.database;
+      final List<Map<String, dynamic>> allResponses = await db.query(
+        'survey_responses',
+        where: "COALESCE(status, 'COMPLETED') = 'COMPLETED'",
+      );
+
+      if (allResponses.isEmpty) {
+        return (successCount: 0, errorCount: 0, message: 'No hay encuestas pendientes de sincronizar.');
+      }
+
+      final Set<String> responseSetIds = {};
+      for (var r in allResponses) {
+        final setId = r['response_set_id']?.toString();
+        if (setId != null && setId.isNotEmpty) {
+          responseSetIds.add(setId);
+        }
+      }
+
+      int successCount = 0;
+      int errorCount = 0;
+
+      for (var setId in responseSetIds) {
+        final ok = await sendSingleResponseSet(setId);
+        if (ok) {
+          successCount++;
+        } else {
+          errorCount++;
+        }
+      }
+
+      return (
+        successCount: successCount,
+        errorCount: errorCount,
+        message: errorCount == 0
+            ? '¡$successCount encuesta(s) sincronizada(s) con éxito!'
+            : 'Sincronizadas: $successCount, Errores: $errorCount',
+      );
+    } catch (e) {
+      debugPrint('Error en sendAllCompletedResponses: $e');
+      return (successCount: 0, errorCount: 1, message: 'Error al enviar: $e');
+    }
   }
 }

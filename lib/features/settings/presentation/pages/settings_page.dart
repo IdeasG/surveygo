@@ -1,12 +1,10 @@
 import 'dart:convert';
-import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:surveygo/core/theme/app_colors.dart';
 import 'package:surveygo/features/settings/data/models/user_model.dart';
 import 'package:surveygo/features/settings/presentation/widgets/profile_section.dart';
 import 'package:surveygo/features/settings/presentation/widgets/settings_section.dart';
-import 'package:surveygo/core/utils/gis_calculator.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:surveygo/core/utils/mbtiles_service.dart';
 import 'package:surveygo/services/database_helper.dart';
@@ -134,38 +132,7 @@ class _SettingsPageState extends State<SettingsPage> {
     });
 
     try {
-      final surveys = await _dbHelper.getSurveys();
-      int successCount = 0;
-      int errorCount = 0;
-
-      for (var survey in surveys) {
-        final allResponses = await _dbHelper.getResponsesBySurvey(survey.id.toString());
-        // Filtrar únicamente aquellas que están en estado COMPLETED (no borradores ni ya sincronizadas)
-        final responses = allResponses.where((r) => (r['status'] ?? 'COMPLETED').toString().toUpperCase() == 'COMPLETED').toList();
-
-        if (responses.isNotEmpty) {
-          Map<String, List<Map<String, dynamic>>> responsesBySurvey = {};
-
-          for (var response in responses) {
-            final surveyId = response['id_encuesta'];
-            if (!responsesBySurvey.containsKey(surveyId)) {
-              responsesBySurvey[surveyId] = [];
-            }
-            responsesBySurvey[surveyId]!.add(response);
-          }
-
-          for (var entry in responsesBySurvey.entries) {
-            final result = await _sendSurveyResponses(entry.key, entry.value);
-            if (result) {
-              successCount++;
-            } else {
-              errorCount++;
-            }
-          }
-        }
-      }
-
-      // Refresh response count
+      final res = await SurveySyncService().sendAllCompletedResponses();
       await _loadResponseCount();
 
       setState(() {
@@ -175,12 +142,8 @@ class _SettingsPageState extends State<SettingsPage> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(
-              errorCount == 0
-                  ? 'Todas las respuestas enviadas correctamente'
-                  : 'Enviadas: $successCount, Errores: $errorCount',
-            ),
-            backgroundColor: errorCount == 0
+            content: Text(res.message),
+            backgroundColor: res.errorCount == 0
                 ? AppColors.successColor
                 : AppColors.warningColor,
           ),
@@ -199,96 +162,6 @@ class _SettingsPageState extends State<SettingsPage> {
           ),
         );
       }
-    }
-  }
-
-  Future<bool> _sendSurveyResponses(
-      String surveyId, List<Map<String, dynamic>> responses) async {
-    try {
-      // Agrupar respuestas por response_set_id
-      Map<String, List<Map<String, dynamic>>> responseGroups = {};
-
-      for (var response in responses) {
-        final responseSetId = response['response_set_id'] ?? 'default';
-        if (!responseGroups.containsKey(responseSetId)) {
-          responseGroups[responseSetId] = [];
-        }
-        responseGroups[responseSetId]!.add(response);
-      }
-
-      // Enviar cada grupo de respuestas por separado
-      bool allSuccessful = true;
-
-      for (var entry in responseGroups.entries) {
-        final responseSetId = entry.key;
-        final groupResponses = entry.value;
-
-        // Format responses according to API requirements
-        List<Map<String, dynamic>> formattedResponses = [];
-
-        for (var response in groupResponses) {
-          String? respuesta = response['c_respuesta']?.toString();
-          final tipo = response['c_tipo_pregunta']?.toString().toUpperCase();
-          final nombreFile = response['c_nombre_file']?.toString();
-          final extension = response['c_extension']?.toString();
-
-          // Si es PHOTO o FILE, y c_respuesta apunta a una ruta de archivo -> convertir a Base64
-          if ((tipo == 'PHOTO' || tipo == 'FILE' || tipo == 'SIGNATURE') &&
-              respuesta != null &&
-              respuesta.isNotEmpty) {
-            try {
-              final file = File(respuesta);
-              if (await file.exists()) {
-                final bytes = await file.readAsBytes();
-                respuesta = base64Encode(bytes);
-              }
-            } catch (e) {
-              debugPrint('No se pudo leer archivo para respuesta: $e');
-            }
-          }
-
-          formattedResponses.add({
-            'id_pregunta':
-                int.tryParse(response['id_pregunta'].toString()) ?? 0,
-            'c_tipo_pregunta': response['c_tipo_pregunta'],
-            'c_respuesta': respuesta,
-            'c_nombre_file': nombreFile,
-            'c_extension': extension,
-            'glgis': response['glgis'] != null
-                ? _parseCoordinates(response['glgis'])
-                : null,
-          });
-        }
-
-        // Create request body
-        final requestBody = {
-          'respuesta': {
-            'id_encuesta': int.tryParse(surveyId) ?? 0,
-            'id_campo_geometria': null,
-            'response_set_id': responseSetId
-          },
-          'respuestasPregunta': formattedResponses
-        };
-
-        // Send to API
-        final result = await _httpProvider.post(
-            '/encuestas/respuesta/insertarConPreguntas',
-            body: requestBody);
-
-        final success = result != null &&
-            (result['status'] == 'success' || result['status'] == 'ok');
-
-        if (success) {
-          await _dbHelper.updateResponseSetStatus(responseSetId, 'SYNCED');
-        } else {
-          allSuccessful = false;
-        }
-      }
-
-      return allSuccessful;
-    } catch (e) {
-      debugPrint('Error sending survey responses: $e');
-      return false;
     }
   }
 
@@ -422,16 +295,4 @@ class _SettingsPageState extends State<SettingsPage> {
       Navigator.of(context).pushReplacementNamed('/login');
     }
   }
-}
-
-dynamic _parseCoordinates(String coordinates) {
-  try {
-    final parsed = GisCalculator.fromGeoJsonOrString(coordinates);
-    if (parsed != null) {
-      return GisCalculator.toGeoJson(parsed.type, parsed.points);
-    }
-  } catch (e) {
-    debugPrint('Error parseando geometría en sincronización: $e');
-  }
-  return null;
 }
