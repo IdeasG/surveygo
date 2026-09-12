@@ -1,7 +1,7 @@
 buildscript {
     ext {
-        // Kotlin actualizado
-        kotlin_version = '1.9.24'
+        // Kotlin actualizado a 2.1.0 compatible con paquetes modernos
+        kotlin_version = '2.1.0'
     }
     repositories {
         google()
