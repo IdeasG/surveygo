@@ -44,8 +44,15 @@ class SurveyQuestionModel {
     if (json['j_opciones'] != null) {
       if (json['j_opciones'] is String) {
         try {
-          opts = jsonDecode(json['j_opciones']);
+          final decoded = jsonDecode(json['j_opciones']);
+          if (decoded is List) {
+            opts = {'opciones': decoded};
+          } else if (decoded is Map) {
+            opts = Map<String, dynamic>.from(decoded);
+          }
         } catch (_) {}
+      } else if (json['j_opciones'] is List) {
+        opts = {'opciones': json['j_opciones']};
       } else if (json['j_opciones'] is Map) {
         opts = Map<String, dynamic>.from(json['j_opciones']);
       }

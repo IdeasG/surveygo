@@ -585,12 +585,20 @@ class _SurveyDetailPageState extends State<SurveyDetailPage> {
     final type = question.type.toUpperCase();
     switch (type) {
       case 'SELECTIONSIMPLE':
+      case 'SELECT_ONE':
+      case 'CHOICE':
         return _buildRadioButtons(question);
       case 'SELECTIONMULTIPLE':
+      case 'SELECT_MULTIPLE':
+      case 'MULTIPLE':
         return _buildCheckboxes(question);
+      case 'DATE':
       case 'DATETIME':
+      case 'TIME':
         return _buildDateTimeInput(question);
       case 'NUMBER':
+      case 'INTEGER':
+      case 'DECIMAL':
         return _buildNumberInput(question);
       case 'EMAIL':
         return _buildEmailInput(question);
@@ -603,10 +611,13 @@ class _SurveyDetailPageState extends State<SurveyDetailPage> {
       case 'GEOSHAPE':
       case 'GEOTRACE':
       case 'GEOPOINT':
+      case 'POINT':
+      case 'GPS':
         return _buildMapButton(question);
       case 'FILE':
         return _buildFileInput(question);
       case 'PHOTO':
+      case 'IMAGE':
         return _buildPhotoInput(question);
       case 'TEXT':
       default:
@@ -615,21 +626,191 @@ class _SurveyDetailPageState extends State<SurveyDetailPage> {
   }
 
   Widget _buildRadioButtons(QuestionModel question) {
-    return Column(
-      children: question.options.map((option) {
-        return RadioListTile<String>(
-          title: Text(option.text),
-          value: option.text,
-          groupValue: question.answer,
-          onChanged: (value) {
-            setState(() {
-              question.answer = value;
-              _validationErrors.remove(question.id);
-            });
+    if (question.options.isEmpty) {
+      return _buildDefaultTextInput(question);
+    }
+
+    // Si tiene 4 o menos opciones, mostrar tarjetas de selección directa
+    if (question.options.length <= 4) {
+      return Column(
+        children: question.options.map((option) {
+          final isSelected = question.answer == option.text || question.answer == option.value;
+          return Padding(
+            padding: const EdgeInsets.only(bottom: 8.0),
+            child: InkWell(
+              borderRadius: BorderRadius.circular(10),
+              onTap: () {
+                setState(() {
+                  question.answer = option.text;
+                  _validationErrors.remove(question.id);
+                });
+              },
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                decoration: BoxDecoration(
+                  color: isSelected ? AppColors.primaryColor.withValues(alpha: 0.08) : Colors.grey.shade50,
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(
+                    color: isSelected ? AppColors.primaryColor : Colors.grey.shade300,
+                    width: isSelected ? 1.8 : 1.0,
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    Icon(
+                      isSelected ? Icons.radio_button_checked : Icons.radio_button_unchecked,
+                      color: isSelected ? AppColors.primaryColor : Colors.grey.shade500,
+                      size: 20,
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        option.text,
+                        style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: isSelected ? FontWeight.bold : FontWeight.w500,
+                          color: isSelected ? AppColors.primaryColor : Colors.black87,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          );
+        }).toList(),
+      );
+    }
+
+    // Si tiene más de 4 opciones, selector desplegable moderno con modal de búsqueda
+    final String currentLabel = question.options.firstWhere(
+      (o) => o.text == question.answer || o.value == question.answer,
+      orElse: () => OptionModel(id: 0, text: question.answer ?? ''),
+    ).text;
+    final bool hasSelection = currentLabel.isNotEmpty;
+
+    return InkWell(
+      borderRadius: BorderRadius.circular(10),
+      onTap: () => _showSearchableOptionPicker(question),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        decoration: BoxDecoration(
+          color: hasSelection ? AppColors.primaryColor.withValues(alpha: 0.05) : Colors.white,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(
+            color: hasSelection ? AppColors.primaryColor.withValues(alpha: 0.6) : Colors.grey.shade400,
+            width: 1.2,
+          ),
+        ),
+        child: Row(
+          children: [
+            Expanded(
+              child: Text(
+                hasSelection ? currentLabel : (question.hint ?? 'Seleccione una opción...'),
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: hasSelection ? FontWeight.w600 : FontWeight.normal,
+                  color: hasSelection ? Colors.black87 : Colors.grey.shade600,
+                ),
+              ),
+            ),
+            const Icon(Icons.arrow_drop_down_circle_outlined, color: AppColors.primaryColor, size: 22),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _showSearchableOptionPicker(QuestionModel question) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) {
+        String filter = '';
+        return StatefulBuilder(
+          builder: (context, setModalState) {
+            final filtered = question.options
+                .where((o) => o.text.toLowerCase().contains(filter.toLowerCase()))
+                .toList();
+
+            return Container(
+              height: MediaQuery.of(context).size.height * 0.75,
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Center(
+                    child: Container(
+                      width: 40,
+                      height: 4,
+                      decoration: BoxDecoration(
+                        color: Colors.grey.shade300,
+                        borderRadius: BorderRadius.circular(2),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    question.text,
+                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    decoration: InputDecoration(
+                      hintText: 'Buscar opción...',
+                      prefixIcon: const Icon(Icons.search, color: AppColors.primaryColor),
+                      filled: true,
+                      fillColor: Colors.grey.shade100,
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(10),
+                        borderSide: BorderSide.none,
+                      ),
+                    ),
+                    onChanged: (val) {
+                      setModalState(() {
+                        filter = val;
+                      });
+                    },
+                  ),
+                  const SizedBox(height: 12),
+                  Expanded(
+                    child: ListView.separated(
+                      itemCount: filtered.length,
+                      separatorBuilder: (_, __) => const Divider(height: 1),
+                      itemBuilder: (context, idx) {
+                        final opt = filtered[idx];
+                        final isSel = question.answer == opt.text || question.answer == opt.value;
+                        return ListTile(
+                          title: Text(
+                            opt.text,
+                            style: TextStyle(
+                              fontWeight: isSel ? FontWeight.bold : FontWeight.normal,
+                              color: isSel ? AppColors.primaryColor : Colors.black87,
+                            ),
+                          ),
+                          trailing: isSel ? const Icon(Icons.check_circle, color: AppColors.primaryColor) : null,
+                          onTap: () {
+                            setState(() {
+                              question.answer = opt.text;
+                              _validationErrors.remove(question.id);
+                            });
+                            Navigator.pop(ctx);
+                          },
+                        );
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            );
           },
-          activeColor: AppColors.primaryColor,
         );
-      }).toList(),
+      },
     );
   }
 
@@ -707,39 +888,109 @@ class _SurveyDetailPageState extends State<SurveyDetailPage> {
   }
 
   Widget _buildDateTimeInput(QuestionModel question) {
-    return Row(
-      children: [
-        Expanded(
-          child: Text(
-            question.answer == null || question.answer!.isEmpty
-                ? 'Ninguna fecha seleccionada'
-                : 'Fecha: ${question.answer}',
-            style: const TextStyle(fontSize: 14),
+    final bool hasDate = question.answer != null && question.answer!.isNotEmpty;
+
+    return Container(
+      decoration: BoxDecoration(
+        color: hasDate ? AppColors.primaryColor.withValues(alpha: 0.05) : Colors.grey.shade50,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: hasDate ? AppColors.primaryColor.withValues(alpha: 0.4) : Colors.grey.shade300,
+        ),
+      ),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: hasDate ? AppColors.primaryColor : Colors.grey.shade200,
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Icon(
+              Icons.calendar_month,
+              color: hasDate ? Colors.white : Colors.grey.shade700,
+              size: 22,
+            ),
           ),
-        ),
-        ElevatedButton.icon(
-          icon: const Icon(Icons.calendar_today),
-          label: const Text('Elegir Fecha'),
-          onPressed: () async {
-            final picked = await showDatePicker(
-              context: context,
-              initialDate: DateTime.now(),
-              firstDate: DateTime(2000),
-              lastDate: DateTime(2100),
-            );
-            if (picked != null) {
-              setState(() {
-                question.answer = picked.toIso8601String().split('T')[0];
-                _validationErrors.remove(question.id);
-              });
-            }
-          },
-        ),
-      ],
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  hasDate ? 'Fecha Seleccionada' : 'Seleccionar Fecha',
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                    color: hasDate ? AppColors.primaryColor : Colors.grey.shade600,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  hasDate ? question.answer! : 'DD/MM/AAAA',
+                  style: TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.bold,
+                    color: hasDate ? Colors.black87 : Colors.grey.shade400,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          ElevatedButton.icon(
+            icon: const Icon(Icons.today, size: 18),
+            label: Text(hasDate ? 'Cambiar' : 'Elegir Fecha'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppColors.primaryColor,
+              foregroundColor: Colors.white,
+              elevation: 0,
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+            ),
+            onPressed: () async {
+              DateTime initial = DateTime.now();
+              if (hasDate) {
+                final parsed = DateTime.tryParse(question.answer!);
+                if (parsed != null) initial = parsed;
+              }
+              final picked = await showDatePicker(
+                context: context,
+                initialDate: initial,
+                firstDate: DateTime(1970),
+                lastDate: DateTime(2100),
+                builder: (context, child) {
+                  return Theme(
+                    data: Theme.of(context).copyWith(
+                      colorScheme: const ColorScheme.light(
+                        primary: AppColors.primaryColor,
+                        onPrimary: Colors.white,
+                        onSurface: Colors.black87,
+                      ),
+                    ),
+                    child: child!,
+                  );
+                },
+              );
+              if (picked != null) {
+                setState(() {
+                  final formatted =
+                      "${picked.year.toString().padLeft(4, '0')}-${picked.month.toString().padLeft(2, '0')}-${picked.day.toString().padLeft(2, '0')}";
+                  question.answer = formatted;
+                  _validationErrors.remove(question.id);
+                });
+              }
+            },
+          ),
+        ],
+      ),
     );
   }
 
   Widget _buildMapButton(QuestionModel question) {
+    final qType = question.type.toUpperCase();
+    final bool isPoint = qType == 'POINT' || qType == 'GEOPOINT' || qType == 'GPS' || qType == 'MAP';
+
     Widget previewWidget = const SizedBox.shrink();
 
     if (question.answer != null && question.answer!.isNotEmpty) {
@@ -751,8 +1002,8 @@ class _SurveyDetailPageState extends State<SurveyDetailPage> {
 
         switch (parsed.type) {
           case GeoGeometryType.point:
-            icon = Icons.place;
-            title = 'Punto Georreferenciado';
+            icon = Icons.gps_fixed;
+            title = 'Punto GPS Georreferenciado';
             final p = parsed.points.first;
             subtitle = 'Lat: ${p.latitude.toStringAsFixed(6)} | Lng: ${p.longitude.toStringAsFixed(6)}';
             break;
@@ -766,35 +1017,51 @@ class _SurveyDetailPageState extends State<SurveyDetailPage> {
             title = 'Polígono / Área (${parsed.points.length} vértices)';
             final areaStr = GisCalculator.formatArea(GisCalculator.calculatePolygonArea(parsed.points));
             final perimStr = GisCalculator.formatDistance(GisCalculator.calculatePerimeter(parsed.points));
-            subtitle = 'Área: $areaStr\nPerímetro: $perimStr';
+            subtitle = 'Área: $areaStr | Perímetro: $perimStr';
             break;
         }
 
         previewWidget = Container(
-          margin: const EdgeInsets.only(bottom: 12),
+          margin: const EdgeInsets.only(bottom: 10),
           padding: const EdgeInsets.all(12),
           decoration: BoxDecoration(
-            color: AppColors.primaryColor.withValues(alpha: 0.06),
-            border: Border.all(color: AppColors.primaryColor.withValues(alpha: 0.4)),
-            borderRadius: BorderRadius.circular(8),
+            color: Colors.green.shade50,
+            border: Border.all(color: Colors.green.shade400, width: 1.2),
+            borderRadius: BorderRadius.circular(10),
           ),
           child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
+            crossAxisAlignment: CrossAxisAlignment.center,
             children: [
-              Icon(icon, color: AppColors.primaryColor, size: 28),
-              const SizedBox(width: 10),
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: Colors.green.shade600,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Icon(icon, color: Colors.white, size: 22),
+              ),
+              const SizedBox(width: 12),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
                       title,
-                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: AppColors.primaryColor),
+                      style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.green.shade900),
                     ),
-                    const SizedBox(height: 4),
-                    Text(subtitle, style: const TextStyle(fontSize: 12, color: Colors.black87)),
+                    const SizedBox(height: 2),
+                    Text(subtitle, style: const TextStyle(fontSize: 12, color: Colors.black87, fontWeight: FontWeight.w500)),
                   ],
                 ),
+              ),
+              IconButton(
+                tooltip: 'Borrar ubicación',
+                icon: const Icon(Icons.close, color: Colors.redAccent, size: 20),
+                onPressed: () {
+                  setState(() {
+                    question.answer = null;
+                  });
+                },
               ),
             ],
           ),
@@ -802,48 +1069,85 @@ class _SurveyDetailPageState extends State<SurveyDetailPage> {
       }
     }
 
-    GeoGeometryType defaultType = GeoGeometryType.point;
-    final qType = question.type.toUpperCase();
-    if (qType == 'POLYGON' || qType == 'GEOSHAPE') {
-      defaultType = GeoGeometryType.polygon;
-    } else if (qType == 'LINE' || qType == 'GEOTRACE') {
-      defaultType = GeoGeometryType.line;
-    }
+    GeoGeometryType defaultType = isPoint
+        ? GeoGeometryType.point
+        : (qType == 'POLYGON' || qType == 'GEOSHAPE' ? GeoGeometryType.polygon : GeoGeometryType.line);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         previewWidget,
-        ElevatedButton.icon(
-          icon: const Icon(Icons.map),
-          label: Text(question.answer == null || question.answer!.isEmpty
-              ? 'Capturar en Mapa (Punto/Línea/Polígono)'
-              : 'Editar Geometría en Mapa'),
-          style: ElevatedButton.styleFrom(
-            backgroundColor: AppColors.primaryColor,
-            foregroundColor: Colors.white,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-          ),
-          onPressed: () async {
-            final result = await Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (context) => MapInputPage(
-                  initialValue: question.answer,
-                  questionText: question.text,
-                  defaultGeometryType: defaultType,
-                  allowGpsOnly: question.allowGpsOnly,
+        Row(
+          children: [
+            if (isPoint) ...[
+              Expanded(
+                child: ElevatedButton.icon(
+                  icon: const Icon(Icons.my_location, size: 18),
+                  label: const Text('Obtener Mi GPS'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.teal.shade700,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                  ),
+                  onPressed: () async {
+                    try {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('📡 Capturando coordenadas GPS satelitales...'), duration: Duration(seconds: 1)),
+                      );
+                      final pos = await Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.high)
+                          .timeout(const Duration(seconds: 5));
+                      final geoJson = jsonEncode({
+                        "type": "Point",
+                        "coordinates": [pos.longitude, pos.latitude]
+                      });
+                      setState(() {
+                        question.answer = geoJson;
+                        _validationErrors.remove(question.id);
+                      });
+                    } catch (e) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text('Error al capturar GPS: $e'), backgroundColor: Colors.red),
+                      );
+                    }
+                  },
                 ),
               ),
-            );
+              const SizedBox(width: 8),
+            ],
+            Expanded(
+              child: OutlinedButton.icon(
+                icon: const Icon(Icons.map, size: 18),
+                label: Text(isPoint ? 'Ajustar en Mapa' : (question.answer == null ? 'Dibujar en Mapa' : 'Editar en Mapa')),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: AppColors.primaryColor,
+                  side: const BorderSide(color: AppColors.primaryColor, width: 1.5),
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                ),
+                onPressed: () async {
+                  final result = await Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => MapInputPage(
+                        initialValue: question.answer,
+                        questionText: question.text,
+                        defaultGeometryType: defaultType,
+                        allowGpsOnly: question.allowGpsOnly,
+                      ),
+                    ),
+                  );
 
-            if (result != null) {
-              setState(() {
-                question.answer = result;
-                _validationErrors.remove(question.id);
-              });
-            }
-          },
+                  if (result != null) {
+                    setState(() {
+                      question.answer = result;
+                      _validationErrors.remove(question.id);
+                    });
+                  }
+                },
+              ),
+            ),
+          ],
         ),
       ],
     );

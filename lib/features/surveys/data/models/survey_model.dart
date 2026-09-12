@@ -101,18 +101,38 @@ class QuestionModel {
 
   factory QuestionModel.fromSurveyQuestionModel(SurveyQuestionModel q) {
     List<OptionModel> parsedOptions = [];
-    if (q.jOpciones != null && q.jOpciones!['opciones'] is List) {
-      final list = q.jOpciones!['opciones'] as List;
-      parsedOptions = list.asMap().entries.map((e) {
-        if (e.value is Map) {
-          return OptionModel(
-            id: e.value['id'] ?? e.key,
-            text: e.value['label'] ?? e.value['text'] ?? e.value.toString(),
-          );
-        } else {
-          return OptionModel(id: e.key, text: e.value.toString());
-        }
-      }).toList();
+    if (q.jOpciones != null) {
+      dynamic rawList;
+      if (q.jOpciones!['opciones'] is List) {
+        rawList = q.jOpciones!['opciones'];
+      } else if (q.jOpciones!['choices'] is List) {
+        rawList = q.jOpciones!['choices'];
+      } else if (q.jOpciones!['items'] is List) {
+        rawList = q.jOpciones!['items'];
+      } else if (q.jOpciones!['values'] is List) {
+        rawList = q.jOpciones!['values'];
+      }
+
+      if (rawList is List) {
+        parsedOptions = rawList.asMap().entries.map((e) {
+          if (e.value is Map) {
+            final valMap = e.value as Map;
+            final label = valMap['label'] ?? valMap['text'] ?? valMap['name'] ?? valMap['value'] ?? e.value.toString();
+            final val = valMap['value'] ?? valMap['name'] ?? label;
+            return OptionModel(
+              id: valMap['id'] ?? e.key,
+              text: label.toString(),
+              value: val.toString(),
+            );
+          } else {
+            return OptionModel(
+              id: e.key,
+              text: e.value.toString(),
+              value: e.value.toString(),
+            );
+          }
+        }).toList();
+      }
     }
 
     return QuestionModel(
@@ -136,18 +156,29 @@ class QuestionModel {
 }
 
 class OptionModel {
-  final int id;
+  final dynamic id;
   final String text;
+  final String? value;
 
   OptionModel({
     required this.id,
     required this.text,
+    this.value,
   });
 
   factory OptionModel.fromJson(Map<String, dynamic> json) {
     return OptionModel(
       id: json['id'] ?? 0,
-      text: json['text'] ?? '',
+      text: json['text'] ?? json['label'] ?? json['value']?.toString() ?? '',
+      value: json['value']?.toString(),
     );
+  }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'id': id,
+      'text': text,
+      'value': value,
+    };
   }
 }
