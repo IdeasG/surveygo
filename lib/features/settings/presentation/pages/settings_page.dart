@@ -109,17 +109,21 @@ class _SettingsPageState extends State<SettingsPage> {
 
     final SurveySyncService syncService = SurveySyncService();
     final bool success = await syncService.syncSurveys();
+    final surveys = success ? await syncService.getLocalSurveys() : [];
 
     setState(() {
       _isLoading = false;
     });
 
     if (mounted) {
+      final String msg = success
+          ? (surveys.isNotEmpty
+              ? 'Se sincronizaron ${surveys.length} formulario(s) con éxito'
+              : 'Sincronizado: No hay encuestas asignadas a su rol')
+          : 'Error al conectar con el servidor para sincronizar';
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(success
-              ? 'Datos sincronizados correctamente'
-              : 'Error al sincronizar datos'),
+          content: Text(msg),
           backgroundColor:
               success ? AppColors.successColor : AppColors.errorColor,
         ),

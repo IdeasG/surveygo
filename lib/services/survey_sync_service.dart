@@ -16,14 +16,17 @@ class SurveySyncService {
       final response = await _httpProvider.get('/encuestas/encuesta/porRol');
       final surveyResponse = SurveyResponseModel.fromJson(response);
 
-      if (surveyResponse.status == 'success' && surveyResponse.data.isNotEmpty) {
+      if (surveyResponse.status == 'success' || surveyResponse.status == 'ok') {
         await _databaseHelper.deleteAllQuestions();
         await _databaseHelper.deleteAllSurveys();
-        await _databaseHelper.insertSurveys(surveyResponse.data);
 
-        for (var survey in surveyResponse.data) {
-          if (survey.preguntas.isNotEmpty) {
-            await _databaseHelper.insertQuestions(survey.preguntas);
+        if (surveyResponse.data.isNotEmpty) {
+          await _databaseHelper.insertSurveys(surveyResponse.data);
+
+          for (var survey in surveyResponse.data) {
+            if (survey.preguntas.isNotEmpty) {
+              await _databaseHelper.insertQuestions(survey.preguntas);
+            }
           }
         }
         return true;
