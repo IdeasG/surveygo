@@ -123,14 +123,13 @@ class _MapInputPageState extends State<MapInputPage> {
 
   void _handleMapTap(TapPosition tapPosition, LatLng latLng) {
     if (_useCrosshairMode) {
-      // En modo retícula se prefiere el botón táctil de pulgar para evitar falsos toques
       return;
     }
 
     if (widget.allowGpsOnly) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Esta pregunta requiere captura satelital real. Use el botón "Mi GPS".'),
+          content: Text('Esta pregunta requiere captura satelital real. Use el botón "GPS".'),
           backgroundColor: Colors.orange,
           duration: Duration(seconds: 2),
         ),
@@ -265,7 +264,7 @@ class _MapInputPageState extends State<MapInputPage> {
                   ScaffoldMessenger.of(context).showSnackBar(
                     SnackBar(
                       content: Text(
-                        'Punto promediado con $samplesCount muestras satelitales (±${avgAcc.toStringAsFixed(1)}m)',
+                        'Punto fijado con $samplesCount muestras promediadas (±${avgAcc.toStringAsFixed(1)}m)',
                       ),
                       backgroundColor: Colors.green.shade700,
                     ),
@@ -383,6 +382,112 @@ class _MapInputPageState extends State<MapInputPage> {
     if (mounted) {
       setState(() => _isStreaming = false);
     }
+  }
+
+  /// Diálogo interactivo para editar o eliminar un vértice específico
+  void _showEditVertexDialog(int index) {
+    HapticFeedback.mediumImpact();
+    final point = _points[index];
+
+    showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (ctx) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      'Vértice #${index + 1}',
+                      style: const TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                        color: AppColors.primaryColor,
+                      ),
+                    ),
+                    Text(
+                      'Lat: ${point.latitude.toStringAsFixed(6)}\nLng: ${point.longitude.toStringAsFixed(6)}',
+                      textAlign: TextAlign.end,
+                      style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
+                    ),
+                  ],
+                ),
+                const Divider(height: 20),
+                ListTile(
+                  leading: const Icon(Icons.filter_center_focus, color: Colors.amber),
+                  title: const Text('Mover a la Mira Central Actual'),
+                  subtitle: const Text('Reubica este vértice exactamente en la cruz'),
+                  onTap: () {
+                    HapticFeedback.mediumImpact();
+                    Navigator.pop(ctx);
+                    final newCenter = _mapController.camera.center;
+                    setState(() {
+                      _points[index] = newCenter;
+                    });
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text('Vértice #${index + 1} reubicado en la mira'),
+                        backgroundColor: Colors.green.shade700,
+                      ),
+                    );
+                  },
+                ),
+                if (_currentGpsLocation != null)
+                  ListTile(
+                    leading: const Icon(Icons.my_location, color: Colors.blue),
+                    title: const Text('Mover a mi Ubicación GPS'),
+                    subtitle: Text(
+                      'Reubica este vértice a tu GPS (±${_gpsAccuracy?.toStringAsFixed(1) ?? "?"}m)',
+                    ),
+                    onTap: () {
+                      HapticFeedback.mediumImpact();
+                      Navigator.pop(ctx);
+                      setState(() {
+                        _points[index] = _currentGpsLocation!;
+                      });
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text('Vértice #${index + 1} reubicado a tu GPS'),
+                          backgroundColor: Colors.green.shade700,
+                        ),
+                      );
+                    },
+                  ),
+                ListTile(
+                  leading: const Icon(Icons.delete_forever, color: Colors.red),
+                  title: const Text(
+                    'Eliminar solo este Vértice',
+                    style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold),
+                  ),
+                  subtitle: const Text('Borra este punto sin perder el resto del trazado'),
+                  onTap: () {
+                    HapticFeedback.heavyImpact();
+                    Navigator.pop(ctx);
+                    setState(() {
+                      _points.removeAt(index);
+                    });
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text('Vértice #${index + 1} eliminado'),
+                        backgroundColor: Colors.red.shade700,
+                      ),
+                    );
+                  },
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
   }
 
   void _undoLastPoint() {
@@ -567,6 +672,45 @@ class _MapInputPageState extends State<MapInputPage> {
     );
   }
 
+  void _showHelpDialog() {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: Row(
+          children: const [
+            Icon(Icons.help_outline, color: AppColors.primaryColor),
+            SizedBox(width: 8),
+            Text('Instrucciones de Captura', style: TextStyle(fontSize: 16)),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: const [
+            Text('🎯 Modo Retícula:', style: TextStyle(fontWeight: FontWeight.bold)),
+            Text('Mueva el mapa bajo la cruz y presione "Fijar Vértice". No tapa la pantalla con el dedo.\n', style: TextStyle(fontSize: 12)),
+
+            Text('✏️ Editar o Eliminar Vértice:', style: TextStyle(fontWeight: FontWeight.bold)),
+            Text('Toque cualquier número de vértice en el mapa para reubicarlo en la mira, moverlo a su GPS o borrarlo individualmente.\n', style: TextStyle(fontSize: 12)),
+
+            Text('🚶 Modo Caminar Lindero:', style: TextStyle(fontWeight: FontWeight.bold)),
+            Text('Presione "Caminar" y recorra el perímetro. Los vértices se capturarán automáticamente cada 2.5 metros.\n', style: TextStyle(fontSize: 12)),
+
+            Text('📡 Promediado GPS (10x):', style: TextStyle(fontWeight: FontWeight.bold)),
+            Text('Toma 10 lecturas consecutivas para filtrar rebotes en zonas boscosas o urbanas.', style: TextStyle(fontSize: 12)),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Entendido'),
+          ),
+        ],
+      ),
+    );
+  }
+
   /// Retícula Táctica Central de Alta Precisión (Cruz de Topografía)
   Widget _buildCrosshair() {
     return SizedBox(
@@ -651,6 +795,12 @@ class _MapInputPageState extends State<MapInputPage> {
         backgroundColor: AppColors.primaryColor,
         foregroundColor: Colors.white,
         actions: [
+          // Guía / Ayuda
+          IconButton(
+            tooltip: 'Guía de uso',
+            icon: const Icon(Icons.help_outline),
+            onPressed: _showHelpDialog,
+          ),
           // Alternar Retícula de Precisión vs Toque Libre
           IconButton(
             tooltip: _useCrosshairMode ? 'Modo Retícula Activo' : 'Modo Toque Libre',
@@ -725,7 +875,7 @@ class _MapInputPageState extends State<MapInputPage> {
                     ),
                   ],
                 ),
-              // Capa de Marcadores / Vértices
+              // Capa de Marcadores / Vértices Interactivos (Tocar para editar/eliminar)
               MarkerLayer(
                 markers: [
                   ..._points.asMap().entries.map((entry) {
@@ -733,31 +883,34 @@ class _MapInputPageState extends State<MapInputPage> {
                     final point = entry.value;
                     return Marker(
                       point: point,
-                      width: 32,
-                      height: 32,
-                      child: Container(
-                        decoration: BoxDecoration(
-                          color: _geometryType == GeoGeometryType.point
-                              ? Colors.red
-                              : AppColors.primaryColor,
-                          shape: BoxShape.circle,
-                          border: Border.all(color: Colors.white, width: 2),
-                          boxShadow: const [
-                            BoxShadow(color: Colors.black26, blurRadius: 4)
-                          ],
-                        ),
-                        child: Center(
-                          child: _geometryType == GeoGeometryType.point
-                              ? const Icon(Icons.location_on,
-                                  color: Colors.white, size: 18)
-                              : Text(
-                                  '${index + 1}',
-                                  style: const TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 12,
-                                    fontWeight: FontWeight.bold,
+                      width: 36,
+                      height: 36,
+                      child: GestureDetector(
+                        onTap: () => _showEditVertexDialog(index),
+                        child: Container(
+                          decoration: BoxDecoration(
+                            color: _geometryType == GeoGeometryType.point
+                                ? Colors.red
+                                : AppColors.primaryColor,
+                            shape: BoxShape.circle,
+                            border: Border.all(color: Colors.white, width: 2),
+                            boxShadow: const [
+                              BoxShadow(color: Colors.black26, blurRadius: 4)
+                            ],
+                          ),
+                          child: Center(
+                            child: _geometryType == GeoGeometryType.point
+                                ? const Icon(Icons.location_on,
+                                    color: Colors.white, size: 18)
+                                : Text(
+                                    '${index + 1}',
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.bold,
+                                    ),
                                   ),
-                                ),
+                          ),
                         ),
                       ),
                     );
@@ -789,9 +942,9 @@ class _MapInputPageState extends State<MapInputPage> {
               ),
             ),
 
-          // 3. Barra Superior de Tipo de Geometría & Pregunta
+          // 3. Banner Informativo Superior
           Positioned(
-            top: 12,
+            top: 10,
             left: 12,
             right: 12,
             child: Column(
@@ -801,10 +954,10 @@ class _MapInputPageState extends State<MapInputPage> {
                   elevation: 4,
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                   child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
                     child: Row(
                       children: [
-                        const Icon(Icons.help_outline, color: AppColors.primaryColor),
+                        const Icon(Icons.help_outline, color: AppColors.primaryColor, size: 20),
                         const SizedBox(width: 8),
                         Expanded(
                           child: Column(
@@ -813,25 +966,16 @@ class _MapInputPageState extends State<MapInputPage> {
                               Text(
                                 widget.questionText,
                                 style: const TextStyle(
-                                  fontSize: 14,
+                                  fontSize: 13,
                                   fontWeight: FontWeight.w600,
                                 ),
                               ),
                               if (widget.allowGpsOnly)
                                 const Text(
-                                  '🔒 Modo Satélite Obligatorio (Solo botón "GPS")',
+                                  '🔒 Modo Satélite Obligatorio',
                                   style: TextStyle(
-                                    fontSize: 11,
+                                    fontSize: 10,
                                     color: Colors.orange,
-                                    fontWeight: FontWeight.bold,
-                                  ),
-                                ),
-                              if (_isStreaming)
-                                const Text(
-                                  '🚶 CAMINANDO LINDERO: Captura automática en curso...',
-                                  style: TextStyle(
-                                    fontSize: 11,
-                                    color: Colors.green,
                                     fontWeight: FontWeight.bold,
                                   ),
                                 ),
@@ -842,14 +986,14 @@ class _MapInputPageState extends State<MapInputPage> {
                     ),
                   ),
                 ),
-                const SizedBox(height: 6),
+                const SizedBox(height: 4),
                 // Selector de Modo (Punto, Línea, Polígono)
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 3),
                   decoration: BoxDecoration(
                     color: Colors.white,
                     borderRadius: BorderRadius.circular(30),
-                    boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 6)],
+                    boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 4)],
                   ),
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
@@ -866,152 +1010,215 @@ class _MapInputPageState extends State<MapInputPage> {
             ),
           ),
 
-          // 4. Panel Inferior Táctico y Ergonómico (Thumb Zone)
-          Positioned(
-            bottom: 16,
-            left: 12,
-            right: 12,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                // Panel informativo de métricas y coordenadas vivas de la retícula
-                _buildMetricsCard(),
-                const SizedBox(height: 8),
-
-                // Botón Principal de Pulgar: Fijar Vértice en la Mira (si está activa)
-                if (_useCrosshairMode)
-                  SizedBox(
-                    width: double.infinity,
-                    child: ElevatedButton.icon(
-                      icon: const Icon(Icons.add_location_alt, size: 22),
-                      label: Text(
-                        _geometryType == GeoGeometryType.point
-                            ? 'Fijar Punto en la Mira Central'
-                            : 'Fijar Vértice en la Mira Central (${_points.length + 1})',
-                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
-                      ),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: AppColors.primaryColor,
-                        foregroundColor: Colors.white,
-                        padding: const EdgeInsets.symmetric(vertical: 14),
-                        elevation: 4,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
+          // 4. Banner Alerta si el Modo Caminar Lindero está Activo
+          if (_isStreaming)
+            Positioned(
+              top: 108,
+              left: 16,
+              right: 16,
+              child: Card(
+                color: Colors.red.shade700,
+                elevation: 6,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.directions_walk, color: Colors.white, size: 20),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          'CAMINANDO LINDERO (${_points.length} vértices)',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.bold,
+                            fontSize: 12,
+                          ),
                         ),
                       ),
-                      onPressed: _addPointFromReticle,
-                    ),
-                  ),
-                if (_useCrosshairMode) const SizedBox(height: 8),
-
-                // Barra de Acciones Satelitales y de Edición
-                Row(
-                  children: [
-                    // Botón Mi GPS (con opción de promediado)
-                    Expanded(
-                      flex: 3,
-                      child: ElevatedButton.icon(
-                        icon: _isLoadingLocation
-                            ? const SizedBox(
-                                width: 14,
-                                height: 14,
-                                child: CircularProgressIndicator(strokeWidth: 2),
-                              )
-                            : const Icon(Icons.my_location, size: 18),
-                        label: Text(
-                          _gpsAccuracy != null
-                              ? 'GPS (±${_gpsAccuracy!.toStringAsFixed(1)}m)'
-                              : 'Mi GPS',
-                          style: const TextStyle(fontSize: 12),
-                        ),
-                        style: ElevatedButton.styleFrom(
+                      TextButton(
+                        onPressed: _stopStreamTracking,
+                        style: TextButton.styleFrom(
                           backgroundColor: Colors.white,
-                          foregroundColor: Colors.blue.shade800,
-                          padding: const EdgeInsets.symmetric(vertical: 11),
-                          elevation: 2,
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(10),
-                          ),
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                         ),
-                        onPressed: _addCurrentLocationPoint,
-                      ),
-                    ),
-                    const SizedBox(width: 6),
-
-                    // Botón Promediar GPS (Antiruido)
-                    IconButton(
-                      tooltip: 'Promediar GPS (10 muestras)',
-                      style: IconButton.styleFrom(
-                        backgroundColor: Colors.white,
-                        foregroundColor: Colors.teal.shade700,
-                        elevation: 2,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(10),
+                        child: const Text(
+                          'DETENER',
+                          style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold, fontSize: 11),
                         ),
                       ),
-                      icon: const Icon(Icons.satellite_alt, size: 20),
-                      onPressed: _startGpsAveraging,
-                    ),
-                    const SizedBox(width: 6),
-
-                    // Modo Caminar Lindero (para Línea y Polígono)
-                    if (_geometryType != GeoGeometryType.point) ...[
-                      IconButton(
-                        tooltip: _isStreaming
-                            ? 'Detener caminado'
-                            : 'Caminar lindero (Streaming continuo)',
-                        style: IconButton.styleFrom(
-                          backgroundColor:
-                              _isStreaming ? Colors.red.shade600 : Colors.white,
-                          foregroundColor:
-                              _isStreaming ? Colors.white : Colors.indigo.shade700,
-                          elevation: 2,
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(10),
-                          ),
-                        ),
-                        icon: Icon(
-                          _isStreaming ? Icons.stop : Icons.directions_walk,
-                          size: 20,
-                        ),
-                        onPressed: _toggleStreamTracking,
-                      ),
-                      const SizedBox(width: 6),
                     ],
+                  ),
+                ),
+              ),
+            ),
 
-                    // Botón Deshacer
-                    IconButton(
-                      tooltip: 'Deshacer último punto',
-                      style: IconButton.styleFrom(
-                        backgroundColor: Colors.white,
-                        foregroundColor: Colors.black87,
-                        elevation: 2,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(10),
+          // 5. Panel Inferior Ergonómico Protegido por SafeArea (Nunca tapado por Android Bar)
+          Positioned(
+            bottom: 0,
+            left: 0,
+            right: 0,
+            child: SafeArea(
+              top: false,
+              bottom: true,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(10, 0, 10, 8),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    // A. Métricas compactas
+                    _buildMetricsCard(),
+                    const SizedBox(height: 6),
+
+                    // B. Fila de Acción Primaria (Fijar en Mira + Deshacer + Limpiar)
+                    Row(
+                      children: [
+                        // Botón Principal de Pulgar: Fijar Vértice en la Mira
+                        Expanded(
+                          flex: 5,
+                          child: ElevatedButton.icon(
+                            icon: const Icon(Icons.add_location_alt, size: 20),
+                            label: Text(
+                              _geometryType == GeoGeometryType.point
+                                  ? 'Fijar Punto'
+                                  : 'Fijar en Mira (${_points.length + 1})',
+                              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                            ),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: AppColors.primaryColor,
+                              foregroundColor: Colors.white,
+                              padding: const EdgeInsets.symmetric(vertical: 13),
+                              elevation: 4,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                            ),
+                            onPressed: _useCrosshairMode ? _addPointFromReticle : null,
+                          ),
                         ),
-                      ),
-                      icon: const Icon(Icons.undo, size: 20),
-                      onPressed: _points.isNotEmpty ? _undoLastPoint : null,
+                        const SizedBox(width: 6),
+
+                        // Botón Deshacer
+                        ElevatedButton.icon(
+                          icon: const Icon(Icons.undo, size: 18),
+                          label: const Text('Deshacer', style: TextStyle(fontSize: 11)),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.white,
+                            foregroundColor: Colors.black87,
+                            padding: const EdgeInsets.symmetric(vertical: 13, horizontal: 10),
+                            elevation: 2,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                          ),
+                          onPressed: _points.isNotEmpty ? _undoLastPoint : null,
+                        ),
+                        const SizedBox(width: 6),
+
+                        // Botón Limpiar Todo
+                        ElevatedButton.icon(
+                          icon: const Icon(Icons.delete_outline, size: 18),
+                          label: const Text('Limpiar', style: TextStyle(fontSize: 11)),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.white,
+                            foregroundColor: Colors.red.shade700,
+                            padding: const EdgeInsets.symmetric(vertical: 13, horizontal: 10),
+                            elevation: 2,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                          ),
+                          onPressed: _points.isNotEmpty ? _clearAllPoints : null,
+                        ),
+                      ],
                     ),
-                    const SizedBox(width: 6),
+                    const SizedBox(height: 6),
 
-                    // Botón Limpiar
-                    IconButton(
-                      tooltip: 'Limpiar todo',
-                      style: IconButton.styleFrom(
-                        backgroundColor: Colors.white,
-                        foregroundColor: Colors.red.shade700,
-                        elevation: 2,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(10),
+                    // C. Fila Satelital & Herramientas Especiales (GPS, Promediar, Caminar)
+                    Row(
+                      children: [
+                        // Botón Mi GPS
+                        Expanded(
+                          child: OutlinedButton.icon(
+                            icon: _isLoadingLocation
+                                ? const SizedBox(
+                                    width: 12,
+                                    height: 12,
+                                    child: CircularProgressIndicator(strokeWidth: 2),
+                                  )
+                                : const Icon(Icons.my_location, size: 15),
+                            label: Text(
+                              _gpsAccuracy != null
+                                  ? 'GPS ±${_gpsAccuracy!.toStringAsFixed(0)}m'
+                                  : 'Mi GPS',
+                              style: const TextStyle(fontSize: 11),
+                            ),
+                            style: OutlinedButton.styleFrom(
+                              backgroundColor: Colors.white,
+                              foregroundColor: Colors.blue.shade800,
+                              padding: const EdgeInsets.symmetric(vertical: 8),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                            ),
+                            onPressed: _addCurrentLocationPoint,
+                          ),
                         ),
-                      ),
-                      icon: const Icon(Icons.delete_outline, size: 20),
-                      onPressed: _points.isNotEmpty ? _clearAllPoints : null,
+                        const SizedBox(width: 6),
+
+                        // Botón Promediar GPS (10x)
+                        Expanded(
+                          child: OutlinedButton.icon(
+                            icon: const Icon(Icons.satellite_alt, size: 15),
+                            label: const Text('Promediar 10x', style: TextStyle(fontSize: 11)),
+                            style: OutlinedButton.styleFrom(
+                              backgroundColor: Colors.white,
+                              foregroundColor: Colors.teal.shade800,
+                              padding: const EdgeInsets.symmetric(vertical: 8),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                            ),
+                            onPressed: _startGpsAveraging,
+                          ),
+                        ),
+
+                        // Botón Caminar Lindero (Stream continuo)
+                        if (_geometryType != GeoGeometryType.point) ...[
+                          const SizedBox(width: 6),
+                          Expanded(
+                            child: ElevatedButton.icon(
+                              icon: Icon(
+                                _isStreaming ? Icons.stop : Icons.directions_walk,
+                                size: 15,
+                              ),
+                              label: Text(
+                                _isStreaming ? 'Detener' : 'Caminar',
+                                style: const TextStyle(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: _isStreaming
+                                    ? Colors.red.shade600
+                                    : Colors.indigo.shade600,
+                                foregroundColor: Colors.white,
+                                padding: const EdgeInsets.symmetric(vertical: 8),
+                                elevation: 2,
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                              ),
+                              onPressed: _toggleStreamTracking,
+                            ),
+                          ),
+                        ],
+                      ],
                     ),
                   ],
                 ),
-              ],
+              ),
             ),
           ),
         ],
@@ -1035,7 +1242,7 @@ class _MapInputPageState extends State<MapInputPage> {
       },
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 200),
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
         decoration: BoxDecoration(
           color: isSelected ? AppColors.primaryColor : Colors.transparent,
           borderRadius: BorderRadius.circular(20),
@@ -1044,7 +1251,7 @@ class _MapInputPageState extends State<MapInputPage> {
           children: [
             Icon(
               icon,
-              size: 16,
+              size: 15,
               color: isSelected ? Colors.white : Colors.grey.shade700,
             ),
             const SizedBox(width: 4),
@@ -1053,7 +1260,7 @@ class _MapInputPageState extends State<MapInputPage> {
               style: TextStyle(
                 color: isSelected ? Colors.white : Colors.grey.shade800,
                 fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-                fontSize: 12,
+                fontSize: 11,
               ),
             ),
           ],
@@ -1064,15 +1271,15 @@ class _MapInputPageState extends State<MapInputPage> {
 
   Widget _buildMetricsCard() {
     return Card(
-      elevation: 4,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      elevation: 3,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
           children: [
-            // Coordenadas Vivas del Centro / Retícula
+            // Fila 1: Coordenada de la Mira + Conteo de Vértices
             ValueListenableBuilder<LatLng>(
               valueListenable: _reticleCenterNotifier,
               builder: (context, center, _) {
@@ -1084,7 +1291,7 @@ class _MapInputPageState extends State<MapInputPage> {
                       style: TextStyle(
                         fontSize: 11,
                         fontWeight: FontWeight.w600,
-                        color: Colors.blueGrey.shade800,
+                        color: Colors.blueGrey.shade900,
                       ),
                     ),
                     Text(
@@ -1101,41 +1308,10 @@ class _MapInputPageState extends State<MapInputPage> {
                 );
               },
             ),
-            const Divider(height: 12),
 
-            if (_geometryType == GeoGeometryType.point) ...[
-              Text(
-                _points.isNotEmpty
-                    ? 'Punto fijado: Lat ${_points.first.latitude.toStringAsFixed(6)} | Lon ${_points.first.longitude.toStringAsFixed(6)}'
-                    : (_useCrosshairMode
-                        ? 'Apunte con la mira central y presione "Fijar Punto en la Mira"'
-                        : 'Toque la pantalla o presione "Mi GPS" para fijar el punto'),
-                style: TextStyle(
-                  fontSize: 12,
-                  color: _points.isNotEmpty ? Colors.black87 : Colors.grey.shade700,
-                ),
-              ),
-            ],
-            if (_geometryType == GeoGeometryType.line) ...[
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Text(
-                    'Longitud: ${GisCalculator.formatDistance(GisCalculator.calculateDistance(_points))}',
-                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
-                  ),
-                  Text(
-                    _points.length < 2 ? 'Falta 1 punto mín.' : 'Ruta lista',
-                    style: TextStyle(
-                      color: _points.length < 2 ? Colors.orange : Colors.green.shade700,
-                      fontSize: 11,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                ],
-              ),
-            ],
-            if (_geometryType == GeoGeometryType.polygon) ...[
+            // Fila 2: Mediciones calculadas (Área / Perímetro / Longitud)
+            if (_geometryType == GeoGeometryType.polygon && _points.length >= 3) ...[
+              const SizedBox(height: 4),
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
@@ -1143,15 +1319,29 @@ class _MapInputPageState extends State<MapInputPage> {
                     'Área: ${GisCalculator.formatArea(GisCalculator.calculatePolygonArea(_points))}',
                     style: const TextStyle(
                       fontWeight: FontWeight.bold,
-                      fontSize: 13,
+                      fontSize: 12,
                       color: AppColors.primaryColor,
                     ),
                   ),
                   Text(
                     'Perímetro: ${GisCalculator.formatDistance(GisCalculator.calculatePerimeter(_points))}',
-                    style: TextStyle(fontSize: 12, color: Colors.grey.shade800),
+                    style: TextStyle(fontSize: 11, color: Colors.grey.shade800),
                   ),
                 ],
+              ),
+            ],
+            if (_geometryType == GeoGeometryType.line && _points.length >= 2) ...[
+              const SizedBox(height: 4),
+              Text(
+                'Longitud: ${GisCalculator.formatDistance(GisCalculator.calculateDistance(_points))}',
+                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
+              ),
+            ],
+            if (_points.isNotEmpty && _geometryType != GeoGeometryType.point) ...[
+              const SizedBox(height: 2),
+              Text(
+                '💡 Tip: Toca cualquier número en el mapa para moverlo o borrarlo.',
+                style: TextStyle(fontSize: 10, color: Colors.grey.shade600, fontStyle: FontStyle.italic),
               ),
             ],
           ],
