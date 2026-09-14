@@ -46,6 +46,7 @@ dependencies:
   latlong2: ^0.9.1
   file_picker: ^8.0.7
   image_picker: ^1.2.1
+  image: ^4.5.4
   mobile_scanner: ^5.2.3
   path: ^1.9.1
 

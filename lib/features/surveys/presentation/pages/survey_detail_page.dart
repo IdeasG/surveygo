@@ -13,6 +13,7 @@ import 'package:sqflite/sqflite.dart';
 import 'package:surveygo/core/theme/app_colors.dart';
 import 'package:surveygo/features/surveys/data/models/survey_model.dart';
 import 'package:surveygo/core/utils/gis_calculator.dart';
+import 'package:surveygo/core/utils/watermark_service.dart';
 import 'package:surveygo/features/surveys/presentation/pages/map_input_page.dart';
 import 'package:surveygo/services/database_helper.dart';
 
@@ -1214,12 +1215,24 @@ class _SurveyDetailPageState extends State<SurveyDetailPage> {
       source: source,
       maxWidth: 1920,
       maxHeight: 1080,
-      imageQuality: 80,
+      imageQuality: 85,
     );
 
     if (pickedFile != null) {
+      HapticFeedback.mediumImpact();
+
+      // Incrustar marca de agua geoespacial y antifraude de manera asíncrona
+      final stampedPath = await WatermarkService.stampMetadataOnImage(
+        imagePath: pickedFile.path,
+        latitude: _currentLocation.latitude,
+        longitude: _currentLocation.longitude,
+        accuracy: _gpsAccuracy > 0 ? _gpsAccuracy : null,
+        timestamp: DateTime.now(),
+        title: question.text,
+      );
+
       setState(() {
-        question.answer = pickedFile.path;
+        question.answer = stampedPath;
         _validationErrors.remove(question.id);
       });
     }
