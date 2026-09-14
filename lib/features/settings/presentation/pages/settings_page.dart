@@ -11,6 +11,7 @@ import 'package:surveygo/services/database_helper.dart';
 import 'package:surveygo/services/http_provider.dart';
 import 'package:surveygo/services/survey_sync_service.dart';
 import 'package:surveygo/services/user_service.dart';
+import 'package:surveygo/core/config/system_presets.dart';
 
 class SettingsPage extends StatefulWidget {
   const SettingsPage({Key? key}) : super(key: key);
@@ -261,6 +262,27 @@ class _SettingsPageState extends State<SettingsPage> {
                             ),
                           ],
                         ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                  SettingsSection(
+                    title: 'Sistema y Entidad Municipal',
+                    children: [
+                      ListTile(
+                        leading: const Icon(Icons.domain, color: AppColors.primaryColor),
+                        title: const Text('Cambiar Entidad / Servidor'),
+                        subtitle: FutureBuilder<String>(
+                          future: SystemPresets.getCurrentMunicipioName(),
+                          builder: (context, snapshot) {
+                            return Text(snapshot.data ?? 'Configuración del Servidor');
+                          },
+                        ),
+                        trailing: const Icon(Icons.arrow_forward_ios, size: 16),
+                        onTap: () async {
+                          await Navigator.pushNamed(context, '/qr-setup');
+                          setState(() {});
+                        },
                       ),
                     ],
                   ),

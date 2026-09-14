@@ -5,6 +5,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:surveygo/core/theme/app_colors.dart';
 import 'package:surveygo/env.dart' as env;
 
+import 'package:surveygo/core/config/system_presets.dart';
+
 class QrSetupPage extends StatefulWidget {
   const QrSetupPage({Key? key}) : super(key: key);
 
@@ -16,10 +18,11 @@ class _QrSetupPageState extends State<QrSetupPage> with SingleTickerProviderStat
   late TabController _tabController;
   final MobileScannerController _controller = MobileScannerController();
   bool _saved = false;
+  String _selectedClientId = '232';
 
   final TextEditingController _ipController = TextEditingController(text: env.ip);
-  final TextEditingController _idSistemaController = TextEditingController(text: env.id_sistema.trim());
-  final TextEditingController _idClienteController = TextEditingController(text: env.id_cliente.trim());
+  final TextEditingController _idSistemaController = TextEditingController(text: '52');
+  final TextEditingController _idClienteController = TextEditingController(text: '232');
 
   @override
   void initState() {
@@ -30,11 +33,13 @@ class _QrSetupPageState extends State<QrSetupPage> with SingleTickerProviderStat
 
   Future<void> _loadExistingConfig() async {
     final prefs = await SharedPreferences.getInstance();
+    final clientId = (prefs.getString('config_id_cliente') ?? '232').trim();
     if (mounted) {
       setState(() {
+        _selectedClientId = clientId;
         _ipController.text = prefs.getString('config_ip') ?? env.ip;
-        _idSistemaController.text = prefs.getString('config_id_sistema') ?? env.id_sistema.trim();
-        _idClienteController.text = prefs.getString('config_id_cliente') ?? env.id_cliente.trim();
+        _idSistemaController.text = prefs.getString('config_id_sistema') ?? '52';
+        _idClienteController.text = clientId;
       });
     }
   }
@@ -49,11 +54,43 @@ class _QrSetupPageState extends State<QrSetupPage> with SingleTickerProviderStat
     super.dispose();
   }
 
+  void _selectPreset(MunicipalityPreset preset) async {
+    setState(() {
+      _selectedClientId = preset.idCliente;
+      _ipController.text = preset.ip;
+      _idSistemaController.text = preset.idSistema;
+      _idClienteController.text = preset.idCliente;
+    });
+
+    await SystemPresets.applyPreset(preset);
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Sistema seleccionado: ${preset.nombre}'),
+          backgroundColor: Colors.green,
+          duration: const Duration(seconds: 2),
+        ),
+      );
+    }
+  }
+
   Future<void> _saveConfig(Map<String, String> data) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('config_ip', data['ip'] ?? '');
     await prefs.setString('config_id_sistema', data['id_sistema'] ?? '');
     await prefs.setString('config_id_cliente', data['id_cliente'] ?? '');
+    if (data['nombre'] != null) {
+      await prefs.setString('config_municipio_nombre', data['nombre']!);
+    } else {
+      // Find matching preset
+      for (final p in SystemPresets.presets) {
+        if (p.idCliente == data['id_cliente']) {
+          await prefs.setString('config_municipio_nombre', p.nombre);
+          break;
+        }
+      }
+    }
 
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -67,11 +104,12 @@ class _QrSetupPageState extends State<QrSetupPage> with SingleTickerProviderStat
   }
 
   Future<void> _useDefaultConfig() async {
-    await _saveConfig({
-      'ip': env.ip,
-      'id_sistema': env.id_sistema.trim(),
-      'id_cliente': env.id_cliente.trim(),
-    });
+    // Default: Chancay
+    final preset = SystemPresets.presets.first;
+    await SystemPresets.applyPreset(preset);
+    if (mounted) {
+      Navigator.pushReplacementNamed(context, '/login');
+    }
   }
 
   Map<String, String>? _parseQrContent(String raw) {
@@ -176,15 +214,90 @@ class _QrSetupPageState extends State<QrSetupPage> with SingleTickerProviderStat
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 const Text(
-                  'Parámetros de Enlace con GLGIS / Servidor',
+                  '1. Seleccionar Entidad / Municipalidad (Rápido)',
                   style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
                 ),
-                const SizedBox(height: 8),
+                const SizedBox(height: 6),
                 Text(
-                  'Configura los datos del servidor backend para sincronizar encuestas y capas.',
+                  'Elige la municipalidad con la que deseas trabajar:',
                   style: TextStyle(fontSize: 13, color: Colors.grey.shade600),
                 ),
-                const SizedBox(height: 24),
+                const SizedBox(height: 14),
+                ...SystemPresets.presets.map((preset) {
+                  final isSelected = _selectedClientId == preset.idCliente;
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: 10),
+                    child: InkWell(
+                      onTap: () => _selectPreset(preset),
+                      borderRadius: BorderRadius.circular(12),
+                      child: Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: isSelected
+                              ? AppColors.primaryColor.withValues(alpha: 0.08)
+                              : Colors.white,
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(
+                            color: isSelected
+                                ? AppColors.primaryColor
+                                : Colors.grey.shade300,
+                            width: isSelected ? 2 : 1,
+                          ),
+                        ),
+                        child: Row(
+                          children: [
+                            Text(preset.icon, style: const TextStyle(fontSize: 28)),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    preset.nombre,
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 14,
+                                      color: isSelected ? AppColors.primaryColor : Colors.black87,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 2),
+                                  Text(
+                                    preset.description,
+                                    style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
+                                  ),
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    'ID Cliente: ${preset.idCliente} | ID Sistema: ${preset.idSistema}',
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w600,
+                                      color: isSelected ? AppColors.primaryColor : Colors.grey.shade700,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            if (isSelected)
+                              const Icon(Icons.check_circle, color: AppColors.primaryColor, size: 24),
+                          ],
+                        ),
+                      ),
+                    ),
+                  );
+                }),
+                const SizedBox(height: 16),
+                const Divider(),
+                const SizedBox(height: 10),
+                const Text(
+                  '2. Parámetros Técnicos del Servidor (Avanzado)',
+                  style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  'Se autocompletan al elegir un municipio, o edítalos para servidores personalizados.',
+                  style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+                ),
+                const SizedBox(height: 16),
                 TextFormField(
                   controller: _ipController,
                   decoration: const InputDecoration(

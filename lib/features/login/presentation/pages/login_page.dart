@@ -7,6 +7,8 @@ import 'package:surveygo/features/login/data/models/login_response.dart';
 import 'package:surveygo/features/login/presentation/widgets/login_form.dart';
 import 'package:surveygo/services/http_provider.dart';
 
+import 'package:surveygo/core/config/system_presets.dart';
+
 class LoginPage extends StatefulWidget {
   const LoginPage({Key? key}) : super(key: key);
 
@@ -17,6 +19,132 @@ class LoginPage extends StatefulWidget {
 class _LoginPageState extends State<LoginPage> {
   final HttpProvider _httpProvider = HttpProvider();
   bool _isLoading = false;
+  String _currentMunicipioName = 'Municipalidad de Chancay';
+  String _currentMunicipioIcon = '🌊';
+  String _currentIdCliente = '232';
+
+  @override
+  void initState() {
+    super.initState();
+    _loadCurrentSystem();
+  }
+
+  Future<void> _loadCurrentSystem() async {
+    final prefs = await SharedPreferences.getInstance();
+    final clientId = (prefs.getString('config_id_cliente') ?? '232').trim();
+    final savedName = prefs.getString('config_municipio_nombre');
+
+    String name = savedName ?? 'Municipalidad de Chancay';
+    String icon = '🌊';
+
+    for (final p in SystemPresets.presets) {
+      if (p.idCliente == clientId) {
+        name = p.nombre;
+        icon = p.icon;
+        break;
+      }
+    }
+
+    if (mounted) {
+      setState(() {
+        _currentIdCliente = clientId;
+        _currentMunicipioName = name;
+        _currentMunicipioIcon = icon;
+      });
+    }
+  }
+
+  void _showSystemSelectorBottomSheet() {
+    showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Text(
+                      'Seleccionar Municipalidad / Sistema',
+                      style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.close),
+                      onPressed: () => Navigator.pop(ctx),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                ...SystemPresets.presets.map((p) {
+                  final isSelected = _currentIdCliente == p.idCliente;
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: ListTile(
+                      tileColor: isSelected
+                          ? AppColors.primaryColor.withValues(alpha: 0.08)
+                          : Colors.grey.shade50,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        side: BorderSide(
+                          color: isSelected ? AppColors.primaryColor : Colors.grey.shade300,
+                          width: isSelected ? 2 : 1,
+                        ),
+                      ),
+                      leading: Text(p.icon, style: const TextStyle(fontSize: 26)),
+                      title: Text(
+                        p.nombre,
+                        style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          color: isSelected ? AppColors.primaryColor : Colors.black87,
+                        ),
+                      ),
+                      subtitle: Text(
+                        '${p.description}\nID: ${p.idCliente} | Sistema: ${p.idSistema}',
+                        style: const TextStyle(fontSize: 11),
+                      ),
+                      trailing: isSelected
+                          ? const Icon(Icons.check_circle, color: AppColors.primaryColor)
+                          : null,
+                      onTap: () async {
+                        Navigator.pop(ctx);
+                        await SystemPresets.applyPreset(p);
+                        if (!mounted) return;
+                        _loadCurrentSystem();
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text('Cambiado a ${p.nombre}'),
+                            backgroundColor: Colors.green,
+                            duration: const Duration(seconds: 2),
+                          ),
+                        );
+                      },
+                    ),
+                  );
+                }),
+                const SizedBox(height: 8),
+                OutlinedButton.icon(
+                  icon: const Icon(Icons.tune),
+                  label: const Text('Configuración Manual / Escanear QR'),
+                  onPressed: () async {
+                    Navigator.pop(ctx);
+                    await Navigator.pushNamed(context, '/qr-setup');
+                    _loadCurrentSystem();
+                  },
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
 
   Future<void> _handleLogin(LoginModel loginModel, bool rememberMe) async {
     setState(() {
@@ -161,7 +289,73 @@ class _LoginPageState extends State<LoginPage> {
                         color: AppColors.textColor,
                       ),
                     ),
-                    const SizedBox(height: 30),
+                    const SizedBox(height: 20),
+                    // Selector de Entidad / Municipio Activo
+                    InkWell(
+                      onTap: _showSystemSelectorBottomSheet,
+                      borderRadius: BorderRadius.circular(12),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: AppColors.primaryColor.withValues(alpha: 0.35)),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black.withValues(alpha: 0.04),
+                              blurRadius: 6,
+                              offset: const Offset(0, 2),
+                            ),
+                          ],
+                        ),
+                        child: Row(
+                          children: [
+                            Container(
+                              padding: const EdgeInsets.all(8),
+                              decoration: BoxDecoration(
+                                color: AppColors.primaryColor.withValues(alpha: 0.1),
+                                shape: BoxShape.circle,
+                              ),
+                              child: Text(_currentMunicipioIcon, style: const TextStyle(fontSize: 18)),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    'Entidad / Municipio:',
+                                    style: TextStyle(fontSize: 11, color: Colors.grey.shade600, fontWeight: FontWeight.w500),
+                                  ),
+                                  Text(
+                                    _currentMunicipioName,
+                                    style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.black87),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ],
+                              ),
+                            ),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                              decoration: BoxDecoration(
+                                color: AppColors.primaryColor.withValues(alpha: 0.1),
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: const Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Text('Cambiar', style: TextStyle(fontSize: 12, color: AppColors.primaryColor, fontWeight: FontWeight.bold)),
+                                  SizedBox(width: 2),
+                                  Icon(Icons.arrow_drop_down, size: 18, color: AppColors.primaryColor),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
                     Card(
                       elevation: 8,
                       shape: RoundedRectangleBorder(
