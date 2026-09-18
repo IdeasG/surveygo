@@ -10,6 +10,7 @@ import 'package:image_picker/image_picker.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:signature/signature.dart';
 import 'package:sqflite/sqflite.dart';
+import 'package:http/http.dart' as http;
 import 'package:surveygo/core/theme/app_colors.dart';
 import 'package:surveygo/features/surveys/data/models/survey_model.dart';
 import 'package:surveygo/core/utils/gis_calculator.dart';
@@ -237,6 +238,35 @@ class _SurveyDetailPageState extends State<SurveyDetailPage> {
       }
     }
 
+    // Reglas de validación estrictas (DNI, RUC, Celular)
+    if (q.answer != null && q.answer!.trim().isNotEmpty) {
+      final val = q.answer!.trim();
+      final lowerField = q.field.toLowerCase();
+      final lowerText = q.text.toLowerCase();
+
+      // DNI: Exactamente 8 dígitos numéricos
+      if (lowerField.contains('dni') || lowerText.contains('dni')) {
+        if (!RegExp(r'^\d{8}$').hasMatch(val)) {
+          return 'El DNI debe contener exactamente 8 dígitos numéricos';
+        }
+      }
+
+      // RUC: Exactamente 11 dígitos numéricos
+      if (lowerField.contains('ruc') || lowerText.contains('ruc')) {
+        if (!RegExp(r'^\d{11}$').hasMatch(val)) {
+          return 'El RUC debe contener exactamente 11 dígitos numéricos';
+        }
+      }
+
+      // Celular / Teléfono: Exactamente 9 dígitos
+      if (lowerField.contains('celular') || lowerField.contains('telefono') ||
+          lowerText.contains('celular') || lowerText.contains('teléfono') || lowerText.contains('telefono')) {
+        if (!RegExp(r'^\d{9}$').hasMatch(val)) {
+          return 'El número de celular debe contener 9 dígitos';
+        }
+      }
+    }
+
     return null;
   }
 
@@ -410,6 +440,12 @@ class _SurveyDetailPageState extends State<SurveyDetailPage> {
         backgroundColor: AppColors.primaryColor,
         foregroundColor: Colors.white,
         actions: [
+          // Asistente de Dictado por Voz IA
+          IconButton(
+            icon: const Icon(Icons.mic, color: Colors.white),
+            tooltip: 'Dictado Asistido por IA',
+            onPressed: _showVoiceAssistantDialog,
+          ),
           // Botón Guardar Borrador
           TextButton.icon(
             icon: const Icon(Icons.save_outlined, color: Colors.white, size: 20),
@@ -1119,9 +1155,11 @@ class _SurveyDetailPageState extends State<SurveyDetailPage> {
                         _validationErrors.remove(question.id);
                       });
                     } catch (e) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(content: Text('Error al capturar GPS: $e'), backgroundColor: Colors.red),
-                      );
+                      if (mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(content: Text('Error al capturar GPS: $e'), backgroundColor: Colors.red),
+                        );
+                      }
                     }
                   },
                 ),
@@ -1189,6 +1227,23 @@ class _SurveyDetailPageState extends State<SurveyDetailPage> {
                   : Image.file(File(question.answer!), fit: BoxFit.cover),
             ),
           ),
+          // Botón de Autocompletado IA Multimodal Gemini
+          Container(
+            width: double.infinity,
+            margin: const EdgeInsets.only(bottom: 10),
+            child: ElevatedButton.icon(
+              icon: const Icon(Icons.auto_awesome, color: Colors.amber, size: 18),
+              label: const Text('✨ Autocompletar con IA (Gemini)', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF0F172A),
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(vertical: 12),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                elevation: 2,
+              ),
+              onPressed: () => _analyzePhotoWithAI(question),
+            ),
+          ),
         ],
         Row(
           children: [
@@ -1236,6 +1291,402 @@ class _SurveyDetailPageState extends State<SurveyDetailPage> {
         _validationErrors.remove(question.id);
       });
     }
+  }
+
+  // ==========================================
+  // IA MULTIMODAL & ASISTENTE DE VOZ (GEMINI)
+  // ==========================================
+
+  Future<void> _analyzePhotoWithAI(QuestionModel photoQuestion) async {
+    if (photoQuestion.answer == null || photoQuestion.answer!.isEmpty) return;
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        content: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 12),
+          child: Row(
+            children: const [
+              CircularProgressIndicator(),
+              SizedBox(width: 20),
+              Expanded(
+                child: Text(
+                  '🤖 Analizando predio y fachada con Gemini IA Multimodal...',
+                  style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    try {
+      String imageBase64;
+      if (photoQuestion.answer!.startsWith('data:image')) {
+        imageBase64 = photoQuestion.answer!.split(',').last;
+      } else {
+        final file = File(photoQuestion.answer!);
+        if (!await file.exists()) {
+          throw Exception('No se encuentra el archivo de imagen capturado');
+        }
+        final bytes = await file.readAsBytes();
+        imageBase64 = base64Encode(bytes);
+      }
+
+      final url = Uri.parse('https://glgisclienteb.ideasg.org/surveygo/api/ai/analyze-facade');
+      final resp = await http.post(
+        url,
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'imageBase64': imageBase64,
+          'mimeType': 'image/jpeg',
+        }),
+      ).timeout(const Duration(seconds: 25));
+
+      if (mounted) Navigator.pop(context); // Cerrar diálogo de carga
+
+      if (resp.statusCode == 200) {
+        final data = jsonDecode(resp.body);
+        if (data['success'] == true && data['analysis'] != null) {
+          final analysis = data['analysis'] as Map<String, dynamic>;
+          _showAiAnalysisResultsModal(analysis);
+        } else {
+          throw Exception(data['error'] ?? 'Respuesta de IA sin análisis');
+        }
+      } else {
+        throw Exception('HTTP ${resp.statusCode}: ${resp.body}');
+      }
+    } catch (e) {
+      if (mounted) {
+        Navigator.of(context, rootNavigator: true).popUntil((route) => route.isFirst || route.settings.name != null);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error en análisis de IA: $e'),
+            backgroundColor: Colors.red.shade800,
+          ),
+        );
+      }
+    }
+  }
+
+  void _showAiAnalysisResultsModal(Map<String, dynamic> analysis) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (ctx) {
+        return Padding(
+          padding: const EdgeInsets.all(20.0),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: Colors.amber.shade100,
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: const Icon(Icons.auto_awesome, color: Colors.amber, size: 24),
+                  ),
+                  const SizedBox(width: 12),
+                  const Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('✨ Autocompletado IA Gemini', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                        Text('Atributos prediales detectados en la fachada', style: TextStyle(fontSize: 12, color: Colors.grey)),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 16),
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.grey.shade50,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.grey.shade200),
+                ),
+                child: Column(
+                  children: [
+                    _buildAiItem('🏢 Pisos Estimados', '${analysis['num_pisos'] ?? "No detectado"}'),
+                    _buildAiItem('🧱 Material Predominante', '${analysis['material_predominante'] ?? "No detectado"}'),
+                    _buildAiItem('🏷️ Estado de Conservación', '${analysis['estado_conservacion'] ?? "No detectado"}'),
+                    _buildAiItem('🏠 Uso Aparente', '${analysis['uso_aparente'] ?? "No detectado"}'),
+                    if (analysis['num_medidor'] != null)
+                      _buildAiItem('⚡ Medidor Visible', '${analysis['num_medidor']} (${analysis['suministro_tipo'] ?? "Luz"})'),
+                    if (analysis['fachada_color'] != null)
+                      _buildAiItem('🎨 Color de Fachada', '${analysis['fachada_color']}'),
+                    if (analysis['observacion_tecnica'] != null)
+                      _buildAiItem('📝 Resumen Técnico', '${analysis['observacion_tecnica']}'),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 20),
+              ElevatedButton.icon(
+                icon: const Icon(Icons.check_circle_outline),
+                label: const Text('✅ Aplicar Automáticamente al Formulario'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.primaryColor,
+                  foregroundColor: Colors.white,
+                  minimumSize: const Size.fromHeight(48),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                ),
+                onPressed: () {
+                  _applyAiAnalysisToQuestions(analysis);
+                  Navigator.pop(ctx);
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('✨ ¡Campos autocompletados exitosamente por la IA!'),
+                      backgroundColor: Colors.green,
+                    ),
+                  );
+                },
+              ),
+              const SizedBox(height: 8),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildAiItem(String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Expanded(flex: 4, child: Text(label, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.black87))),
+          Expanded(flex: 5, child: Text(value, style: TextStyle(fontSize: 12, color: Colors.blueGrey.shade800))),
+        ],
+      ),
+    );
+  }
+
+  void _applyAiAnalysisToQuestions(Map<String, dynamic> analysis) {
+    setState(() {
+      for (final q in _questions) {
+        final text = q.text.toLowerCase();
+        final field = q.field.toLowerCase();
+
+        // Pisos
+        if (text.contains('piso') || text.contains('nivel') || field.contains('piso')) {
+          if (analysis['num_pisos'] != null) {
+            q.answer = analysis['num_pisos'].toString();
+          }
+        }
+        // Material
+        else if (text.contains('material') || text.contains('muro') || field.contains('material')) {
+          if (analysis['material_predominante'] != null) {
+            final mat = analysis['material_predominante'].toString();
+            if (q.options.isNotEmpty) {
+              final matched = q.options.firstWhere(
+                (o) => mat.toLowerCase().contains(o.text.toLowerCase()) || o.text.toLowerCase().contains(mat.toLowerCase()),
+                orElse: () => q.options.first,
+              );
+              q.answer = matched.text;
+            } else {
+              q.answer = mat;
+            }
+          }
+        }
+        // Estado
+        else if (text.contains('estado') || text.contains('conservac') || field.contains('estado')) {
+          if (analysis['estado_conservacion'] != null) {
+            final est = analysis['estado_conservacion'].toString();
+            if (q.options.isNotEmpty) {
+              final matched = q.options.firstWhere(
+                (o) => est.toLowerCase().contains(o.text.toLowerCase()) || o.text.toLowerCase().contains(est.toLowerCase()),
+                orElse: () => q.options.first,
+              );
+              q.answer = matched.text;
+            } else {
+              q.answer = est;
+            }
+          }
+        }
+        // Uso
+        else if (text.contains('uso') || text.contains('destino') || field.contains('uso')) {
+          if (analysis['uso_aparente'] != null) {
+            final uso = analysis['uso_aparente'].toString();
+            if (q.options.isNotEmpty) {
+              final matched = q.options.firstWhere(
+                (o) => uso.toLowerCase().contains(o.text.toLowerCase()) || o.text.toLowerCase().contains(uso.toLowerCase()),
+                orElse: () => q.options.first,
+              );
+              q.answer = matched.text;
+            } else {
+              q.answer = uso;
+            }
+          }
+        }
+        // Medidor
+        else if (text.contains('medidor') || text.contains('suministro') || field.contains('medidor')) {
+          if (analysis['num_medidor'] != null) {
+            q.answer = analysis['num_medidor'].toString();
+          }
+        }
+        // Color
+        else if (text.contains('color') || field.contains('color')) {
+          if (analysis['fachada_color'] != null) {
+            q.answer = analysis['fachada_color'].toString();
+          }
+        }
+        // Observación
+        else if (text.contains('observac') || field.contains('observac')) {
+          if (analysis['observacion_tecnica'] != null) {
+            q.answer = analysis['observacion_tecnica'].toString();
+          }
+        }
+        _validationErrors.remove(q.id);
+      }
+    });
+  }
+
+  void _showVoiceAssistantDialog() {
+    final textCtrl = TextEditingController();
+    showDialog(
+      context: context,
+      builder: (ctx) {
+        bool isSubmitting = false;
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+              title: Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: Colors.blue.shade50,
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: const Icon(Icons.mic, color: Colors.blue, size: 22),
+                  ),
+                  const SizedBox(width: 10),
+                  const Text('Dictado Asistido por IA', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                ],
+              ),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text(
+                    'Dicta o escribe notas sobre el predio (pisos, materiales, uso, medidor). Gemini estructurará automáticamente el formulario.',
+                    style: TextStyle(fontSize: 12, color: Colors.grey),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: textCtrl,
+                    maxLines: 4,
+                    decoration: InputDecoration(
+                      hintText: 'Ej: Casa de 2 pisos, ladrillo bueno, uso vivienda y tienda, medidor 89123...',
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                      contentPadding: const EdgeInsets.all(12),
+                    ),
+                  ),
+                  if (isSubmitting) ...[
+                    const SizedBox(height: 16),
+                    const CircularProgressIndicator(),
+                    const SizedBox(height: 8),
+                    const Text('Procesando dictado con Gemini 3.5 Flash...', style: TextStyle(fontSize: 11, color: Colors.blueGrey)),
+                  ]
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  child: const Text('Cancelar'),
+                ),
+                ElevatedButton.icon(
+                  icon: const Icon(Icons.auto_awesome, size: 16),
+                  label: const Text('Estructurar'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.primaryColor,
+                    foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  ),
+                  onPressed: isSubmitting ? null : () async {
+                    final note = textCtrl.text.trim();
+                    if (note.isEmpty) return;
+
+                    setDialogState(() => isSubmitting = true);
+                    try {
+                      final url = Uri.parse('https://glgisclienteb.ideasg.org/surveygo/api/ai/parse-voice');
+                      final questionsSummary = _questions.map((q) => {
+                        'id': q.id,
+                        'fieldName': q.field,
+                        'questionText': q.text,
+                        'questionType': q.type,
+                        'options': q.options.map((o) => o.text).toList(),
+                      }).toList();
+
+                      final resp = await http.post(
+                        url,
+                        headers: {'Content-Type': 'application/json'},
+                        body: jsonEncode({
+                          'text': note,
+                          'questions': questionsSummary,
+                        }),
+                      ).timeout(const Duration(seconds: 20));
+
+                      if (resp.statusCode == 200) {
+                        final resJson = jsonDecode(resp.body);
+                        if (resJson['success'] == true && resJson['data'] != null) {
+                          final answers = resJson['data']['answers'] as Map<String, dynamic>?;
+                          if (answers != null && answers.isNotEmpty) {
+                            setState(() {
+                              for (final entry in answers.entries) {
+                                final key = entry.key.toString().toLowerCase();
+                                final val = entry.value.toString();
+                                for (final q in _questions) {
+                                  if (q.id.toString() == key ||
+                                      q.field.toLowerCase() == key ||
+                                      q.text.toLowerCase().contains(key)) {
+                                    q.answer = val;
+                                    _validationErrors.remove(q.id);
+                                  }
+                                }
+                              }
+                            });
+                          }
+                          if (ctx.mounted) Navigator.pop(ctx);
+                          if (mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text('✨ Dictado procesado: ${resJson['data']['summary'] ?? 'Formulario actualizado'}'),
+                                backgroundColor: Colors.green.shade800,
+                              ),
+                            );
+                          }
+                        }
+                      }
+                    } catch (e) {
+                      setDialogState(() => isSubmitting = false);
+                      if (mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(content: Text('Error procesando audio/texto: $e'), backgroundColor: Colors.red),
+                        );
+                      }
+                    }
+                  },
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
   }
 
   Widget _buildSignatureInput(QuestionModel question) {
@@ -1308,7 +1759,7 @@ class _SurveyDetailPageState extends State<SurveyDetailPage> {
                     });
                   }
                 }
-                Navigator.pop(ctx);
+                if (ctx.mounted) Navigator.pop(ctx);
               },
               child: const Text('Guardar Firma'),
             ),

@@ -54,6 +54,27 @@ class _MapInputPageState extends State<MapInputPage> {
   bool _isStreaming = false;
   StreamSubscription<Position>? _streamSubscription;
 
+  // Imán Magnético Topológico (Snapping de Vértices)
+  bool _snappingEnabled = true;
+  LatLng? _snappedPoint;
+
+  LatLng? _findNearbySnap(LatLng center) {
+    if (!_snappingEnabled || _points.isEmpty) return null;
+    const distance = Distance();
+    const double thresholdMeters = 6.0; // Umbral táctico de 6 metros
+
+    LatLng? nearest;
+    double minD = double.infinity;
+    for (final p in _points) {
+      final d = distance.as(LengthUnit.Meter, center, p);
+      if (d <= thresholdMeters && d < minD) {
+        minD = d;
+        nearest = p;
+      }
+    }
+    return nearest;
+  }
+
   @override
   void initState() {
     super.initState();
@@ -162,7 +183,18 @@ class _MapInputPageState extends State<MapInputPage> {
     }
 
     HapticFeedback.mediumImpact();
-    final target = _mapController.camera.center;
+    final target = _snappedPoint ?? _mapController.camera.center;
+
+    if (_snappedPoint != null) {
+      ScaffoldMessenger.of(context).hideCurrentSnackBar();
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('🧲 Vértice acoplado con imán topológico'),
+          backgroundColor: Colors.green,
+          duration: Duration(milliseconds: 1200),
+        ),
+      );
+    }
 
     setState(() {
       if (_geometryType == GeoGeometryType.point) {
@@ -711,32 +743,54 @@ class _MapInputPageState extends State<MapInputPage> {
     );
   }
 
-  /// Retícula Táctica Central de Alta Precisión (Cruz de Topografía)
+  /// Retícula Táctica Central de Alta Precisión (Cruz de Topografía con Imán)
   Widget _buildCrosshair() {
+    final isSnapped = _snappedPoint != null;
+    final color = isSnapped ? Colors.greenAccent.shade700 : AppColors.primaryColor;
+
     return SizedBox(
-      width: 64,
-      height: 64,
+      width: 80,
+      height: 80,
       child: Stack(
         alignment: Alignment.center,
         children: [
+          if (isSnapped)
+            Positioned(
+              top: 0,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: Colors.green.shade800,
+                  borderRadius: BorderRadius.circular(8),
+                  boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 4)],
+                ),
+                child: const Text(
+                  '🧲 IMÁN',
+                  style: TextStyle(color: Colors.white, fontSize: 9, fontWeight: FontWeight.bold),
+                ),
+              ),
+            ),
           // Círculo exterior de precisión
           Container(
-            width: 44,
-            height: 44,
+            width: isSnapped ? 48 : 44,
+            height: isSnapped ? 48 : 44,
             decoration: BoxDecoration(
               shape: BoxShape.circle,
               border: Border.all(
-                color: AppColors.primaryColor.withValues(alpha: 0.85),
-                width: 2.0,
+                color: color.withValues(alpha: isSnapped ? 1.0 : 0.85),
+                width: isSnapped ? 3.0 : 2.0,
               ),
+              boxShadow: isSnapped
+                  ? [BoxShadow(color: Colors.greenAccent.withValues(alpha: 0.5), blurRadius: 8)]
+                  : null,
             ),
           ),
-          // Punto central rojo táctico
+          // Punto central táctico
           Container(
-            width: 8,
-            height: 8,
+            width: isSnapped ? 10 : 8,
+            height: isSnapped ? 10 : 8,
             decoration: BoxDecoration(
-              color: Colors.redAccent,
+              color: isSnapped ? Colors.greenAccent.shade700 : Colors.redAccent,
               shape: BoxShape.circle,
               boxShadow: [
                 BoxShadow(
@@ -748,38 +802,38 @@ class _MapInputPageState extends State<MapInputPage> {
           ),
           // Eje vertical superior
           Positioned(
-            top: 0,
+            top: isSnapped ? 14 : 8,
             child: Container(
-              width: 2,
-              height: 14,
-              color: AppColors.primaryColor,
+              width: isSnapped ? 3 : 2,
+              height: 12,
+              color: color,
             ),
           ),
           // Eje vertical inferior
           Positioned(
-            bottom: 0,
+            bottom: 8,
             child: Container(
-              width: 2,
-              height: 14,
-              color: AppColors.primaryColor,
+              width: isSnapped ? 3 : 2,
+              height: 12,
+              color: color,
             ),
           ),
           // Eje horizontal izquierdo
           Positioned(
-            left: 0,
+            left: 8,
             child: Container(
-              width: 14,
-              height: 2,
-              color: AppColors.primaryColor,
+              width: 12,
+              height: isSnapped ? 3 : 2,
+              color: color,
             ),
           ),
           // Eje horizontal derecho
           Positioned(
-            right: 0,
+            right: 8,
             child: Container(
-              width: 14,
-              height: 2,
-              color: AppColors.primaryColor,
+              width: 12,
+              height: isSnapped ? 3 : 2,
+              color: color,
             ),
           ),
         ],
@@ -795,6 +849,29 @@ class _MapInputPageState extends State<MapInputPage> {
         backgroundColor: AppColors.primaryColor,
         foregroundColor: Colors.white,
         actions: [
+          // Alternar Imán Magnético Topológico
+          IconButton(
+            tooltip: _snappingEnabled ? 'Imán Topológico Activo' : 'Imán Desactivado',
+            icon: Icon(
+              Icons.attractions,
+              color: _snappingEnabled ? Colors.greenAccent : Colors.white70,
+            ),
+            onPressed: () {
+              HapticFeedback.selectionClick();
+              setState(() {
+                _snappingEnabled = !_snappingEnabled;
+                if (!_snappingEnabled) _snappedPoint = null;
+              });
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text(_snappingEnabled
+                      ? '🧲 Imán Activado: Acople automático a vértices colindantes'
+                      : 'Imán Desactivado'),
+                  duration: const Duration(seconds: 2),
+                ),
+              );
+            },
+          ),
           // Guía / Ayuda
           IconButton(
             tooltip: 'Guía de uso',
@@ -845,7 +922,23 @@ class _MapInputPageState extends State<MapInputPage> {
               initialZoom: 16.0,
               onTap: _handleMapTap,
               onPositionChanged: (camera, hasGesture) {
-                _reticleCenterNotifier.value = camera.center;
+                final center = camera.center;
+                if (_snappingEnabled) {
+                  final snap = _findNearbySnap(center);
+                  if (snap != null) {
+                    if (_snappedPoint != snap) {
+                      HapticFeedback.selectionClick();
+                    }
+                    if (_snappedPoint != snap) {
+                      setState(() => _snappedPoint = snap);
+                    }
+                    _reticleCenterNotifier.value = snap;
+                    return;
+                  } else if (_snappedPoint != null) {
+                    setState(() => _snappedPoint = null);
+                  }
+                }
+                _reticleCenterNotifier.value = center;
               },
             ),
             children: [
