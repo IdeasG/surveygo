@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:surveygo/core/utils/gis_calculator.dart';
 import 'package:surveygo/features/surveys/data/models/survey_question_model.dart';
 import 'package:surveygo/features/surveys/data/models/survey_response_model.dart';
@@ -13,20 +14,40 @@ class SurveySyncService {
 
   Future<bool> syncSurveys() async {
     try {
-      final response = await _httpProvider.get('/encuestas/encuesta/porRol');
-      final surveyResponse = SurveyResponseModel.fromJson(response);
+      final prefs = await SharedPreferences.getInstance();
+      final isSaas = prefs.getBool('is_saas_mode') ?? false;
+      final projectId = prefs.getString('project_id');
 
-      if (surveyResponse.status == 'success' || surveyResponse.status == 'ok') {
+      dynamic response;
+      if (isSaas || (projectId != null && projectId.isNotEmpty)) {
+        final queryParams = (projectId != null && projectId.isNotEmpty) ? {'project_id': projectId} : null;
+        response = await _httpProvider.get('/surveygo/api/sync/surveys', queryParams: queryParams);
+      } else {
+        response = await _httpProvider.get('/encuestas/encuesta/porRol');
+      }
+
+      List<SurveyRolModel> surveyList = [];
+      if (response != null) {
+        if (response['surveys'] is List) {
+          surveyList = (response['surveys'] as List)
+              .map((item) => SurveyRolModel.fromJson(item))
+              .toList();
+        } else if (response['data'] is List) {
+          surveyList = (response['data'] as List)
+              .map((item) => SurveyRolModel.fromJson(item))
+              .toList();
+        }
+      }
+
+      if (surveyList.isNotEmpty) {
         await _databaseHelper.deleteAllQuestions();
         await _databaseHelper.deleteAllSurveys();
 
-        if (surveyResponse.data.isNotEmpty) {
-          await _databaseHelper.insertSurveys(surveyResponse.data);
+        await _databaseHelper.insertSurveys(surveyList);
 
-          for (var survey in surveyResponse.data) {
-            if (survey.preguntas.isNotEmpty) {
-              await _databaseHelper.insertQuestions(survey.preguntas);
-            }
+        for (var survey in surveyList) {
+          if (survey.preguntas.isNotEmpty) {
+            await _databaseHelper.insertQuestions(survey.preguntas);
           }
         }
         return true;
@@ -329,6 +350,57 @@ class SurveySyncService {
           'c_extension': extension,
           'glgis': response['glgis'] != null ? parseCoordinates(response['glgis']) : null,
         });
+      }
+
+      final prefs = await SharedPreferences.getInstance();
+      final isSaas = prefs.getBool('is_saas_mode') ?? false;
+      final projectId = prefs.getString('project_id');
+
+      if (isSaas || (projectId != null && projectId.isNotEmpty)) {
+        final username = prefs.getString('username') ?? 'Encuestador Móvil';
+        dynamic mainGeom;
+        for (var r in responses) {
+          if (r['glgis'] != null) {
+            mainGeom = parseCoordinates(r['glgis']);
+            if (mainGeom != null) break;
+          }
+        }
+
+        final answersList = formattedResponses.map((r) => {
+          'questionId': r['id_pregunta']?.toString(),
+          'fieldName': r['c_campo'] ?? 'campo_${r['id_pregunta']}',
+          'textValue': r['c_respuesta']?.toString(),
+          'geometry': r['glgis'],
+          'fileName': r['c_nombre_file'],
+          'fileUrl': r['c_extension']
+        }).toList();
+
+        final batchPayload = {
+          'responses': [
+            {
+              'clientUuid': responseSetId,
+              'surveyId': surveyId,
+              'surveyorName': username,
+              'deviceId': 'flutter_mobile',
+              'geometry': mainGeom,
+              'status': 'COMPLETO',
+              'submittedAt': DateTime.now().toIso8601String(),
+              'answers': answersList
+            }
+          ]
+        };
+
+        final result = await _httpProvider.post(
+          '/surveygo/api/sync/batch',
+          body: batchPayload,
+        );
+
+        final success = result != null && result['success'] == true;
+        if (success) {
+          await _databaseHelper.updateResponseSetStatus(responseSetId, 'SYNCED');
+          return true;
+        }
+        return false;
       }
 
       final requestBody = {

@@ -70,14 +70,27 @@ class SurveyQuestionModel {
     final maxV = (json['max_value'] ?? opts?['max_value'])?.toDouble();
     final regex = json['regex'] ?? opts?['regex'];
 
+    int parsedId = 0;
+    if (json['id'] is int) {
+      parsedId = json['id'];
+    } else if (json['id'] != null) {
+      parsedId = int.tryParse(json['id'].toString()) ?? (json['id'].toString().hashCode.abs() % 2147483647);
+    }
+
+    int parsedSurveyId = 0;
+    final rawSurveyId = json['id_encuesta'] ?? json['survey_id'];
+    if (rawSurveyId is int) {
+      parsedSurveyId = rawSurveyId;
+    } else if (rawSurveyId != null) {
+      parsedSurveyId = int.tryParse(rawSurveyId.toString()) ?? (rawSurveyId.toString().hashCode.abs() % 2147483647);
+    }
+
     return SurveyQuestionModel(
-      id: json['id'] is int ? json['id'] : (int.tryParse(json['id']?.toString() ?? '0') ?? 0),
-      idEncuesta: json['id_encuesta'] is int
-          ? json['id_encuesta']
-          : (int.tryParse(json['id_encuesta']?.toString() ?? '0') ?? 0),
-      cCampo: json['c_campo']?.toString() ?? '',
-      cPregunta: json['c_pregunta']?.toString() ?? '',
-      cTipo: json['c_tipo']?.toString() ?? '',
+      id: parsedId,
+      idEncuesta: parsedSurveyId,
+      cCampo: json['c_campo']?.toString() ?? json['field_name']?.toString() ?? '',
+      cPregunta: json['c_pregunta']?.toString() ?? json['question_text']?.toString() ?? '',
+      cTipo: (json['c_tipo'] ?? json['question_type'] ?? 'TEXT').toString().toUpperCase(),
       jOpciones: opts,
       isRequired: requiredVal == true || requiredVal == 1 || requiredVal == 'true',
       dependsOnField: depField?.toString(),

@@ -44,20 +44,27 @@ class SurveyRolModel {
   });
 
   factory SurveyRolModel.fromJson(Map<String, dynamic> json) {
+    int parsedId = 0;
+    if (json['id'] is int) {
+      parsedId = json['id'];
+    } else if (json['id'] != null) {
+      parsedId = int.tryParse(json['id'].toString()) ?? (json['id'].toString().hashCode.abs() % 2147483647);
+    }
+
     return SurveyRolModel(
-      id: json['id'] ?? 0,
-      cNombreEncuesta: json['c_nombre_encuesta'] ?? '',
-      cTipo: json['c_tipo'] ?? '',
+      id: parsedId,
+      cNombreEncuesta: json['c_nombre_encuesta']?.toString() ?? json['title']?.toString() ?? '',
+      cTipo: (json['c_tipo'] ?? json['geometry_type'] ?? 'POLYGON').toString().toUpperCase(),
       dFechaCreacion: json['d_fecha_creacion'] != null
-          ? DateTime.parse(json['d_fecha_creacion'])
-          : DateTime.now(),
-      idRol: json['id_rol'] ?? 0,
-      idFuente: json['id_fuente'] ?? 0,
+          ? DateTime.tryParse(json['d_fecha_creacion'].toString()) ?? DateTime.now()
+          : (json['created_at'] != null ? DateTime.tryParse(json['created_at'].toString()) ?? DateTime.now() : DateTime.now()),
+      idRol: json['id_rol'] is int ? json['id_rol'] : (int.tryParse(json['id_rol']?.toString() ?? '0') ?? 0),
+      idFuente: json['id_fuente'] is int ? json['id_fuente'] : (int.tryParse(json['id_fuente']?.toString() ?? '0') ?? 0),
       fuenteDatos: json['fuenteDatos'] != null
           ? FuenteDatos.fromJson(json['fuenteDatos'])
           : null,
-      preguntas: json['preguntas'] != null
-          ? (json['preguntas'] as List)
+      preguntas: (json['preguntas'] ?? json['questions']) != null
+          ? ((json['preguntas'] ?? json['questions']) as List)
               .map((item) => SurveyQuestionModel.fromJson(item))
               .toList()
           : [],
