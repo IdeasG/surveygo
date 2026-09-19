@@ -11,6 +11,8 @@ import 'package:latlong2/latlong.dart';
 import 'package:signature/signature.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:http/http.dart' as http;
+import 'package:mobile_scanner/mobile_scanner.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:surveygo/core/theme/app_colors.dart';
 import 'package:surveygo/features/surveys/data/models/survey_model.dart';
 import 'package:surveygo/core/utils/gis_calculator.dart';
@@ -42,6 +44,7 @@ class _SurveyDetailPageState extends State<SurveyDetailPage> {
   // Auditoría e Integridad Antifraude (Estilo SurveyCTO)
   final DateTime _startTime = DateTime.now();
   double _gpsAccuracy = 0.0;
+  double _gpsAltitude = 0.0;
   LatLng? _initialGpsLocation;
 
   // Ubicación actual
@@ -100,6 +103,7 @@ class _SurveyDetailPageState extends State<SurveyDetailPage> {
           setState(() {
             _currentLocation = LatLng(position.latitude, position.longitude);
             _gpsAccuracy = position.accuracy;
+            _gpsAltitude = position.altitude;
             _initialGpsLocation ??= LatLng(position.latitude, position.longitude);
             _isRuralZone = true;
           });
@@ -140,6 +144,21 @@ class _SurveyDetailPageState extends State<SurveyDetailPage> {
           if (resp['status'] != null) {
             _currentStatus = resp['status'];
           }
+        }
+      } else {
+        // Carga de campos persistentes (GIS Cloud Sticky Fields) para nuevo registro
+        try {
+          final prefs = await SharedPreferences.getInstance();
+          for (var q in loaded) {
+            if (q.isPersistent && (q.answer == null || q.answer!.isEmpty)) {
+              final cached = prefs.getString('persistent_${widget.survey.id}_${q.field}');
+              if (cached != null && cached.isNotEmpty) {
+                q.answer = cached;
+              }
+            }
+          }
+        } catch (e) {
+          debugPrint('Error cargando campos persistentes: $e');
         }
       }
 
@@ -188,7 +207,7 @@ class _SurveyDetailPageState extends State<SurveyDetailPage> {
     return {'path': filePath, 'name': fileName, 'ext': extension};
   }
 
-  // Evaluación de Skip Logic (Lógica condicional)
+  // Evaluación de Skip Logic Avanzada (Lógica condicional multinivel)
   bool _isQuestionVisible(QuestionModel q) {
     if (q.dependsOnField == null || q.dependsOnField!.trim().isEmpty) return true;
 
@@ -205,7 +224,48 @@ class _SurveyDetailPageState extends State<SurveyDetailPage> {
     if (q.dependsOnValue != null) {
       final expected = q.dependsOnValue.toString().trim().toLowerCase();
       final actual = parent.answer.toString().trim().toLowerCase();
-      return actual == expected;
+      final op = (q.conditionOperator ?? '=').trim();
+
+      switch (op) {
+        case '!=':
+        case '<>':
+        case 'not_equals':
+          return actual != expected;
+        case '>':
+        case 'greater_than':
+          final numA = double.tryParse(actual);
+          final numE = double.tryParse(expected);
+          if (numA != null && numE != null) return numA > numE;
+          return actual.compareTo(expected) > 0;
+        case '<':
+        case 'less_than':
+          final numA = double.tryParse(actual);
+          final numE = double.tryParse(expected);
+          if (numA != null && numE != null) return numA < numE;
+          return actual.compareTo(expected) < 0;
+        case '>=':
+        case 'greater_equal':
+          final numA = double.tryParse(actual);
+          final numE = double.tryParse(expected);
+          if (numA != null && numE != null) return numA >= numE;
+          return actual.compareTo(expected) >= 0;
+        case '<=':
+        case 'less_equal':
+          final numA = double.tryParse(actual);
+          final numE = double.tryParse(expected);
+          if (numA != null && numE != null) return numA <= numE;
+          return actual.compareTo(expected) <= 0;
+        case 'contains':
+        case 'in':
+          return actual.contains(expected);
+        case 'not_contains':
+          return !actual.contains(expected);
+        case '=':
+        case '==':
+        case 'equals':
+        default:
+          return actual == expected;
+      }
     }
 
     return true;
@@ -214,6 +274,11 @@ class _SurveyDetailPageState extends State<SurveyDetailPage> {
   // Validación de campo
   String? _validateQuestion(QuestionModel q) {
     if (!_isQuestionVisible(q)) return null;
+
+    final qType = q.type.toUpperCase();
+    if (qType == 'NOTE' || qType == 'INFO' || qType == 'INSTRUCTION') {
+      return null;
+    }
 
     if (q.isRequired && (q.answer == null || q.answer!.trim().isEmpty)) {
       return 'Este campo es obligatorio';
@@ -310,8 +375,10 @@ class _SurveyDetailPageState extends State<SurveyDetailPage> {
       await dbHelper.deleteResponseSet(responseSetId);
 
       for (final question in _questions) {
-        // Si no es visible por skip logic, no guardamos respuesta
+        // Si no es visible por skip logic o es tipo informativo NOTE, no guardamos respuesta
         if (!_isQuestionVisible(question)) continue;
+        final qUpper = question.type.toUpperCase();
+        if (qUpper == 'NOTE' || qUpper == 'INFO' || qUpper == 'INSTRUCTION') continue;
 
         Map<String, dynamic> responseData = {
           'id_encuesta': widget.survey.id.toString(),
@@ -370,6 +437,12 @@ class _SurveyDetailPageState extends State<SurveyDetailPage> {
               final parsed = GisCalculator.fromGeoJsonOrString(question.answer);
               if (parsed != null) {
                 final geoJsonMap = GisCalculator.toGeoJson(parsed.type, parsed.points);
+                geoJsonMap['properties'] = {
+                  ...?geoJsonMap['properties'] as Map<String, dynamic>?,
+                  'accuracy_m': _gpsAccuracy > 0 ? _gpsAccuracy : null,
+                  'altitude_m': _gpsAltitude != 0.0 ? _gpsAltitude : null,
+                  'timestamp': DateTime.now().toIso8601String(),
+                };
                 responseData['glgis'] = jsonEncode(geoJsonMap);
               } else {
                 responseData['glgis'] = question.answer;
@@ -383,6 +456,12 @@ class _SurveyDetailPageState extends State<SurveyDetailPage> {
               final parsed = GisCalculator.fromGeoJsonOrString(question.answer);
               if (parsed != null) {
                 final geoJsonMap = GisCalculator.toGeoJson(parsed.type, parsed.points);
+                geoJsonMap['properties'] = {
+                  ...?geoJsonMap['properties'] as Map<String, dynamic>?,
+                  'accuracy_m': _gpsAccuracy > 0 ? _gpsAccuracy : null,
+                  'altitude_m': _gpsAltitude != 0.0 ? _gpsAltitude : null,
+                  'timestamp': DateTime.now().toIso8601String(),
+                };
                 responseData['glgis'] = jsonEncode(geoJsonMap);
               } else {
                 responseData['glgis'] = question.answer;
@@ -394,7 +473,12 @@ class _SurveyDetailPageState extends State<SurveyDetailPage> {
                 "coordinates": [
                   _currentLocation.longitude,
                   _currentLocation.latitude
-                ]
+                ],
+                "properties": {
+                  "accuracy_m": _gpsAccuracy > 0 ? _gpsAccuracy : null,
+                  "altitude_m": _gpsAltitude != 0.0 ? _gpsAltitude : null,
+                  "timestamp": DateTime.now().toIso8601String(),
+                }
               };
               responseData['glgis'] = jsonEncode(geoJson);
               responseData['c_respuesta'] = '${_currentLocation.latitude}, ${_currentLocation.longitude}';
@@ -407,6 +491,18 @@ class _SurveyDetailPageState extends State<SurveyDetailPage> {
         }
 
         await dbHelper.insertResponse(responseData);
+      }
+
+      // Persistencia automática de campos fijos (GIS Cloud Sticky Fields)
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        for (final question in _questions) {
+          if (question.isPersistent && question.answer != null && question.answer!.trim().isNotEmpty) {
+            await prefs.setString('persistent_${widget.survey.id}_${question.field}', question.answer!.trim());
+          }
+        }
+      } catch (e) {
+        debugPrint('Error guardando campos persistentes: $e');
       }
 
       if (mounted) {
@@ -548,6 +644,14 @@ class _SurveyDetailPageState extends State<SurveyDetailPage> {
       return const SizedBox.shrink();
     }
 
+    final qTypeUpper = question.type.toUpperCase();
+    if (qTypeUpper == 'NOTE' || qTypeUpper == 'INFO' || qTypeUpper == 'INSTRUCTION') {
+      return Padding(
+        padding: const EdgeInsets.only(bottom: 16.0),
+        child: _buildNoteWidget(question),
+      );
+    }
+
     final hasError = _validationErrors.containsKey(question.id);
 
     return Card(
@@ -597,13 +701,35 @@ class _SurveyDetailPageState extends State<SurveyDetailPage> {
                               ),
                             ),
                           ),
+                          if (question.isPersistent) ...[
+                            const SizedBox(width: 6),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                              decoration: BoxDecoration(
+                                color: Colors.blue.shade50,
+                                borderRadius: BorderRadius.circular(6),
+                                border: Border.all(color: Colors.blue.shade200),
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(Icons.push_pin, size: 10, color: Colors.blue.shade700),
+                                  const SizedBox(width: 2),
+                                  Text(
+                                    'Fijo',
+                                    style: TextStyle(fontSize: 10, color: Colors.blue.shade800, fontWeight: FontWeight.bold),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
                           if (question.isRequired)
                             const Text(' *', style: TextStyle(color: Colors.red, fontSize: 18, fontWeight: FontWeight.bold)),
                         ],
                       ),
                       if (question.hint != null && question.hint!.isNotEmpty)
                         Padding(
-                          padding: const EdgeInsets.only(top: 4.0),
+                           padding: const EdgeInsets.only(top: 4.0),
                           child: Text(
                             question.hint!,
                             style: TextStyle(fontSize: 12, color: Colors.grey.shade600, fontStyle: FontStyle.italic),
@@ -633,6 +759,19 @@ class _SurveyDetailPageState extends State<SurveyDetailPage> {
   Widget _buildInputForQuestion(QuestionModel question) {
     final type = question.type.toUpperCase();
     switch (type) {
+      case 'NOTE':
+      case 'INFO':
+      case 'INSTRUCTION':
+        return _buildNoteWidget(question);
+      case 'RANGE':
+      case 'SLIDER':
+        return _buildRangeSlider(question);
+      case 'TIME':
+        return _buildTimePicker(question);
+      case 'BARCODE':
+      case 'QR':
+      case 'SCANNER':
+        return _buildBarcodeScannerWidget(question);
       case 'SELECTIONSIMPLE':
       case 'SELECT_ONE':
       case 'CHOICE':
@@ -643,7 +782,6 @@ class _SurveyDetailPageState extends State<SurveyDetailPage> {
         return _buildCheckboxes(question);
       case 'DATE':
       case 'DATETIME':
-      case 'TIME':
         return _buildDateTimeInput(question);
       case 'NUMBER':
       case 'INTEGER':
@@ -893,10 +1031,16 @@ class _SurveyDetailPageState extends State<SurveyDetailPage> {
 
   Widget _buildDefaultTextInput(QuestionModel question) {
     return TextFormField(
+      key: ValueKey('${question.id}_${question.answer}'),
       initialValue: question.answer,
       decoration: InputDecoration(
         hintText: question.hint ?? 'Escribe tu respuesta aquí',
         border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+        suffixIcon: IconButton(
+          icon: const Icon(Icons.qr_code_scanner, color: AppColors.primaryColor),
+          tooltip: 'Escanear Código / QR',
+          onPressed: () => _openBarcodeScanner(question),
+        ),
       ),
       onChanged: (value) {
         question.answer = value;
@@ -907,16 +1051,376 @@ class _SurveyDetailPageState extends State<SurveyDetailPage> {
 
   Widget _buildNumberInput(QuestionModel question) {
     return TextFormField(
+      key: ValueKey('${question.id}_${question.answer}'),
       initialValue: question.answer,
       keyboardType: const TextInputType.numberWithOptions(decimal: true),
       decoration: InputDecoration(
         hintText: question.hint ?? 'Ingrese un número',
         border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+        suffixIcon: IconButton(
+          icon: const Icon(Icons.qr_code_scanner, color: AppColors.primaryColor),
+          tooltip: 'Escanear Código de Barras / Medidor',
+          onPressed: () => _openBarcodeScanner(question),
+        ),
       ),
       onChanged: (value) {
         question.answer = value;
         _validationErrors.remove(question.id);
       },
+    );
+  }
+
+  Widget _buildBarcodeScannerWidget(QuestionModel question) {
+    final hasValue = question.answer != null && question.answer!.trim().isNotEmpty;
+
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: hasValue ? AppColors.primaryColor.withValues(alpha: 0.05) : Colors.grey.shade50,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(
+          color: hasValue ? AppColors.primaryColor.withValues(alpha: 0.5) : Colors.grey.shade300,
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (hasValue) ...[
+            Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: AppColors.primaryColor.withValues(alpha: 0.1),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: const Icon(Icons.qr_code_2, color: AppColors.primaryColor, size: 24),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Código Escaneado:',
+                        style: TextStyle(fontSize: 11, color: Colors.grey, fontWeight: FontWeight.bold),
+                      ),
+                      const SizedBox(height: 2),
+                      SelectableText(
+                        question.answer!,
+                        style: const TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                          fontFamily: 'monospace',
+                          color: Colors.black87,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.close, color: Colors.redAccent, size: 20),
+                  tooltip: 'Borrar código',
+                  onPressed: () {
+                    setState(() {
+                      question.answer = null;
+                    });
+                  },
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+          ],
+          ElevatedButton.icon(
+            icon: const Icon(Icons.qr_code_scanner, size: 20),
+            label: Text(hasValue ? 'Volver a Escanear Código' : 'Escanear Código de Barras / QR'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppColors.primaryColor,
+              foregroundColor: Colors.white,
+              minimumSize: const Size.fromHeight(44),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+            ),
+            onPressed: () => _openBarcodeScanner(question),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _openBarcodeScanner(QuestionModel question) async {
+    final MobileScannerController controller = MobileScannerController(
+      detectionSpeed: DetectionSpeed.normal,
+      facing: CameraFacing.back,
+      torchEnabled: false,
+    );
+    bool hasScanned = false;
+
+    await showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.black,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) {
+        return SizedBox(
+          height: MediaQuery.of(context).size.height * 0.75,
+          child: Column(
+            children: [
+              AppBar(
+                backgroundColor: Colors.transparent,
+                elevation: 0,
+                leading: IconButton(
+                  icon: const Icon(Icons.close, color: Colors.white),
+                  onPressed: () => Navigator.pop(ctx),
+                ),
+                title: const Text(
+                  'Escanear Código / QR',
+                  style: TextStyle(color: Colors.white, fontSize: 16),
+                ),
+                actions: [
+                  IconButton(
+                    icon: const Icon(Icons.flash_on, color: Colors.white),
+                    onPressed: () => controller.toggleTorch(),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.flip_camera_ios, color: Colors.white),
+                    onPressed: () => controller.switchCamera(),
+                  ),
+                ],
+              ),
+              Expanded(
+                child: Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    MobileScanner(
+                      controller: controller,
+                      onDetect: (capture) {
+                        if (hasScanned) return;
+                        final barcodes = capture.barcodes;
+                        if (barcodes.isNotEmpty) {
+                          final raw = barcodes.first.rawValue;
+                          if (raw != null && raw.trim().isNotEmpty) {
+                            hasScanned = true;
+                            HapticFeedback.heavyImpact();
+                            setState(() {
+                              question.answer = raw.trim();
+                              _validationErrors.remove(question.id);
+                            });
+                            Navigator.pop(ctx);
+                          }
+                        }
+                      },
+                    ),
+                    // Retícula de enfoque visual estilo lector láser
+                    Container(
+                      width: 240,
+                      height: 240,
+                      decoration: BoxDecoration(
+                        border: Border.all(color: Colors.tealAccent, width: 2),
+                        borderRadius: BorderRadius.circular(16),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: Text(
+                  'Apunta al código de barras o QR de medidor, predio o catastro',
+                  style: TextStyle(color: Colors.white.withValues(alpha: 0.8), fontSize: 13),
+                  textAlign: TextAlign.center,
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+    controller.dispose();
+  }
+
+  Widget _buildNoteWidget(QuestionModel question) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.amber.shade50,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: Colors.amber.shade300, width: 1.2),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(Icons.info_outline_rounded, color: Colors.amber.shade800, size: 24),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  question.text,
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.amber.shade900,
+                  ),
+                ),
+                if (question.hint != null && question.hint!.isNotEmpty) ...[
+                  const SizedBox(height: 4),
+                  Text(
+                    question.hint!,
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: Colors.brown.shade800,
+                      height: 1.3,
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildRangeSlider(QuestionModel question) {
+    final double min = question.minValue ?? 0.0;
+    final double max = question.maxValue ?? 100.0;
+    double currentVal = double.tryParse(question.answer ?? '') ?? min;
+    if (currentVal < min) currentVal = min;
+    if (currentVal > max) currentVal = max;
+
+    return Column(
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text('${min.toInt()}', style: TextStyle(fontSize: 12, color: Colors.grey.shade600, fontWeight: FontWeight.bold)),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+              decoration: BoxDecoration(
+                color: AppColors.primaryColor,
+                borderRadius: BorderRadius.circular(20),
+              ),
+              child: Text(
+                question.answer != null && question.answer!.isNotEmpty
+                    ? (currentVal % 1 == 0 ? currentVal.toInt().toString() : currentVal.toStringAsFixed(1))
+                    : 'Sin asignar (${min.toInt()})',
+                style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+              ),
+            ),
+            Text('${max.toInt()}', style: TextStyle(fontSize: 12, color: Colors.grey.shade600, fontWeight: FontWeight.bold)),
+          ],
+        ),
+        Slider(
+          value: currentVal,
+          min: min,
+          max: max,
+          divisions: (max - min) > 0 ? (max - min).toInt().clamp(1, 100) : 10,
+          activeColor: AppColors.primaryColor,
+          inactiveColor: Colors.grey.shade300,
+          label: currentVal % 1 == 0 ? currentVal.toInt().toString() : currentVal.toStringAsFixed(1),
+          onChanged: (val) {
+            setState(() {
+              final formatted = val % 1 == 0 ? val.toInt().toString() : val.toStringAsFixed(1);
+              question.answer = formatted;
+              _validationErrors.remove(question.id);
+            });
+          },
+        ),
+      ],
+    );
+  }
+
+  Widget _buildTimePicker(QuestionModel question) {
+    final bool hasTime = question.answer != null && question.answer!.isNotEmpty;
+
+    return Container(
+      decoration: BoxDecoration(
+        color: hasTime ? AppColors.primaryColor.withValues(alpha: 0.05) : Colors.grey.shade50,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: hasTime ? AppColors.primaryColor.withValues(alpha: 0.4) : Colors.grey.shade300,
+        ),
+      ),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: hasTime ? AppColors.primaryColor : Colors.grey.shade200,
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Icon(
+              Icons.access_time_filled,
+              color: hasTime ? Colors.white : Colors.grey.shade700,
+              size: 22,
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  hasTime ? 'Hora Seleccionada' : 'Seleccionar Hora',
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                    color: hasTime ? AppColors.primaryColor : Colors.grey.shade600,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  hasTime ? question.answer! : 'HH:MM (24 Horas)',
+                  style: TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.bold,
+                    color: hasTime ? Colors.black87 : Colors.grey.shade400,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          ElevatedButton.icon(
+            icon: const Icon(Icons.schedule, size: 18),
+            label: Text(hasTime ? 'Cambiar' : 'Elegir Hora'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppColors.primaryColor,
+              foregroundColor: Colors.white,
+              elevation: 0,
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+            ),
+            onPressed: () async {
+              TimeOfDay initial = TimeOfDay.now();
+              if (hasTime) {
+                final parts = question.answer!.split(':');
+                if (parts.length >= 2) {
+                  final h = int.tryParse(parts[0]);
+                  final m = int.tryParse(parts[1]);
+                  if (h != null && m != null) initial = TimeOfDay(hour: h, minute: m);
+                }
+              }
+              final picked = await showTimePicker(
+                context: context,
+                initialTime: initial,
+              );
+              if (picked != null) {
+                setState(() {
+                  final formatted =
+                      "${picked.hour.toString().padLeft(2, '0')}:${picked.minute.toString().padLeft(2, '0')}";
+                  question.answer = formatted;
+                  _validationErrors.remove(question.id);
+                });
+              }
+            },
+          ),
+        ],
+      ),
     );
   }
 

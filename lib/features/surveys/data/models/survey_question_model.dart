@@ -19,6 +19,8 @@ class SurveyQuestionModel {
   final double? minValue;
   final double? maxValue;
   final String? regexPattern;
+  final bool isPersistent;
+  final String? conditionOperator; // '=', '!=', '>', '<', '>=', '<=', 'contains'
 
   SurveyQuestionModel({
     required this.id,
@@ -37,24 +39,27 @@ class SurveyQuestionModel {
     this.minValue,
     this.maxValue,
     this.regexPattern,
+    this.isPersistent = false,
+    this.conditionOperator = '=',
   });
 
   factory SurveyQuestionModel.fromJson(Map<String, dynamic> json) {
     Map<String, dynamic>? opts;
-    if (json['j_opciones'] != null) {
-      if (json['j_opciones'] is String) {
+    final rawOptions = json['j_opciones'] ?? json['options'];
+    if (rawOptions != null) {
+      if (rawOptions is String) {
         try {
-          final decoded = jsonDecode(json['j_opciones']);
+          final decoded = jsonDecode(rawOptions);
           if (decoded is List) {
             opts = {'opciones': decoded};
           } else if (decoded is Map) {
             opts = Map<String, dynamic>.from(decoded);
           }
         } catch (_) {}
-      } else if (json['j_opciones'] is List) {
-        opts = {'opciones': json['j_opciones']};
-      } else if (json['j_opciones'] is Map) {
-        opts = Map<String, dynamic>.from(json['j_opciones']);
+      } else if (rawOptions is List) {
+        opts = {'opciones': rawOptions};
+      } else if (rawOptions is Map) {
+        opts = Map<String, dynamic>.from(rawOptions);
       }
     }
 
@@ -69,6 +74,8 @@ class SurveyQuestionModel {
     final minV = (json['min_value'] ?? opts?['min_value'])?.toDouble();
     final maxV = (json['max_value'] ?? opts?['max_value'])?.toDouble();
     final regex = json['regex'] ?? opts?['regex'];
+    final persistentVal = json['is_persistent'] ?? opts?['is_persistent'] ?? false;
+    final condOp = json['condition_operator'] ?? opts?['condition_operator'] ?? '=';
 
     int parsedId = 0;
     if (json['id'] is int) {
@@ -102,6 +109,8 @@ class SurveyQuestionModel {
       minValue: minV,
       maxValue: maxV,
       regexPattern: regex?.toString(),
+      isPersistent: persistentVal == true || persistentVal == 1 || persistentVal == 'true',
+      conditionOperator: condOp?.toString(),
     );
   }
 
@@ -123,6 +132,8 @@ class SurveyQuestionModel {
       'min_value': minValue,
       'max_value': maxValue,
       'regex': regexPattern,
+      'is_persistent': isPersistent,
+      'condition_operator': conditionOperator,
     };
   }
 
@@ -139,6 +150,8 @@ class SurveyQuestionModel {
     if (minValue != null) mergedOptions['min_value'] = minValue;
     if (maxValue != null) mergedOptions['max_value'] = maxValue;
     if (regexPattern != null) mergedOptions['regex'] = regexPattern;
+    if (isPersistent) mergedOptions['is_persistent'] = true;
+    if (conditionOperator != null) mergedOptions['condition_operator'] = conditionOperator;
 
     return {
       'id': id,

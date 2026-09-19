@@ -56,6 +56,8 @@ class QuestionModel {
   final double? minValue;
   final double? maxValue;
   final String? regexPattern;
+  final bool isPersistent;
+  final String? conditionOperator;
 
   QuestionModel({
     required this.id,
@@ -74,6 +76,8 @@ class QuestionModel {
     this.minValue,
     this.maxValue,
     this.regexPattern,
+    this.isPersistent = false,
+    this.conditionOperator = '=',
   });
 
   factory QuestionModel.fromJson(Map<String, dynamic> json) {
@@ -96,6 +100,8 @@ class QuestionModel {
       minValue: (json['min_value'] as num?)?.toDouble(),
       maxValue: (json['max_value'] as num?)?.toDouble(),
       regexPattern: json['regex'],
+      isPersistent: json['is_persistent'] == true || json['is_persistent'] == 1 || json['is_persistent'] == 'true',
+      conditionOperator: json['condition_operator']?.toString() ?? '=',
     );
   }
 
@@ -151,6 +157,8 @@ class QuestionModel {
       minValue: q.minValue,
       maxValue: q.maxValue,
       regexPattern: q.regexPattern,
+      isPersistent: q.isPersistent,
+      conditionOperator: q.conditionOperator,
     );
   }
 }

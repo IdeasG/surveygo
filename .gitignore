@@ -47,4 +47,5 @@ app.*.map.json
 
 # Android Signing Keys
 **/android/key.properties
-**/android/app/*.jks
+**/android/app/*.jks
+scratch/
